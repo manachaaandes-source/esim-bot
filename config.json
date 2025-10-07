@@ -1,0 +1,6 @@
+{
+  "TELEGRAM_TOKEN": "8278850479:AAG7RZ32UqsXMXbvDA6Da-LhDWBjQmlNFvU",
+  "PAYPAY_API_KEY": "a_lA81zoHgBi_ITbD",
+  "PAYPAY_API_SECRET": "ji/jCepGGl8IX/86LzFNIIVr509Gv8U8wHwbv9NrFq4=",
+  "CALLBACK_URL": "https://coeliac-miki-lamentingly.ngrok-free.dev/paypay/callback"
+}
