@@ -262,7 +262,8 @@ async def handle_config_input(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
 
-    if not state or not state["stage"].startswith("config_"):
+    # ✅ 管理者かつ設定変更モード以外はスルー
+    if not is_admin(uid) or not state or not state.get("stage", "").startswith("config_"):
         return
 
     target = state["target"]
