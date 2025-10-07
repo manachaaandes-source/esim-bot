@@ -323,7 +323,6 @@ async def help_cmd(message: types.Message):
         "/help - この一覧を表示"
     )
 
-
 # === /contact ===
 @dp.message(Command("contact"))
 async def contact_start(message: types.Message):
@@ -348,16 +347,93 @@ async def cancel_mode(message: types.Message):
         await message.answer("⚠️ 現在アクティブなモードはありません。")
 
 
-# === 問い合わせメッセージ or /config入力 統合ハンドラ ===
+# === 管理者がボタンで返信選択 ===
+@dp.callback_query(F.data.startswith("reply_"))
+async def admin_reply_button(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("権限がありません。", show_alert=True)
+        return
+
+    target_id = int(callback.data.split("_")[1])
+    STATE[callback.from_user.id] = {"stage": "replying", "target": target_id}
+
+    await callback.message.answer(
+        f"✏️ ユーザー {target_id} への返信内容を入力してください。\n"
+        "このままメッセージを送信するとユーザーに転送されます。"
+    )
+    await callback.answer()
+
+
+# === 管理者が /reply コマンドで返信 ===
+@dp.message(Command("reply"))
+async def admin_reply_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("権限がありません。")
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("使い方: /reply <ユーザーID> <本文>")
+        return
+
+    target_id = int(parts[1])
+    text = parts[2]
+    await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{text}")
+    await message.answer("✅ 返信を送信しました。")
+
+
+# === 拒否理由返信（ForceReply） ===
+@dp.message(F.reply_to_message)
+async def handle_reason_reply(message: types.Message):
+    admin_state = STATE.get(message.from_user.id)
+    if not admin_state:
+        return
+
+    # 🔹 拒否理由モード
+    if admin_state.get("stage") == "awaiting_reason":
+        target_id = admin_state["target"]
+        reason = message.text.strip()
+        await bot.send_message(
+            target_id,
+            f"⚠️ 支払い内容が確認できませんでした。\n理由：{reason}\n\n再度『完了』と送信してください。"
+        )
+        await message.answer("❌ 拒否理由を送信しました。")
+        STATE.pop(message.from_user.id, None)
+        STATE.pop(target_id, None)
+        return
+
+    # 🔹 管理者返信モード（ForceReply経由）
+    if (
+        admin_state.get("stage") == "replying"
+        and message.reply_to_message
+        and getattr(message.reply_to_message.from_user, "is_bot", False)
+    ):
+        target_id = admin_state["target"]
+        text = message.text.strip()
+        await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{text}")
+        await message.answer("✅ ユーザーに返信を送信しました。")
+        STATE.pop(message.from_user.id, None)
+        return
+
+
+# === 問い合わせ / config / 管理者返信 統合ハンドラ ===
 @dp.message(F.text)
-async def handle_contact_or_config(message: types.Message):
+async def handle_text_message(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
 
-    # 🔹 問い合わせモード中のメッセージ
+    # 🟢 管理者が返信中
+    if state and state.get("stage") == "replying" and is_admin(uid):
+        target_id = state["target"]
+        text = message.text.strip()
+        await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{text}")
+        await message.answer("✅ 返信を送信しました。")
+        STATE.pop(uid, None)
+        return
+
+    # 🟢 ユーザーが問い合わせ中
     if state and state.get("stage") == "contact":
         text = message.text.strip()
-
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🗣️ この人に返信", callback_data=f"reply_{uid}")]
@@ -374,7 +450,7 @@ async def handle_contact_or_config(message: types.Message):
         await message.answer("📨 管理者に送信しました。返信をお待ちください。")
         return
 
-    # 🔹 管理者が /config 入力中
+    # 🟢 管理者が /config モード中
     if is_admin(uid) and state and state.get("stage", "").startswith("config_"):
         target = state["target"]
         mode = state["stage"].split("_")[1]
@@ -399,64 +475,8 @@ async def handle_contact_or_config(message: types.Message):
         await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
         return
 
-    # 🔹 その他はスルー
+    # その他メッセージは無視
     return
-
-
-# === 管理者がボタンで返信選択 ===
-@dp.callback_query(F.data.startswith("reply_"))
-async def admin_reply_button(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("権限がありません。", show_alert=True)
-        return
-
-    target_id = int(callback.data.split("_")[1])
-    STATE[callback.from_user.id] = {"stage": "replying", "target": target_id}
-    await callback.message.answer(
-        f"✏️ ユーザー {target_id} への返信内容を入力してください。",
-        reply_markup=ForceReply(selective=True)
-    )
-    await callback.answer()
-
-
-# === 管理者が /reply コマンドで返信 ===
-@dp.message(Command("reply"))
-async def admin_reply_cmd(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("権限がありません。")
-        return
-
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("使い方: /reply <ユーザーID> <本文>")
-        return
-
-    target_id = int(parts[1])
-    text = parts[2]
-    await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{text}")
-    await message.answer("✅ 返信を送信しました。")
-
-
-# === 管理者が ForceReply 経由で返信入力した場合 ===
-@dp.message(F.reply_to_message)
-async def handle_admin_reply(message: types.Message):
-    admin_state = STATE.get(message.from_user.id)
-
-    # ✅ Bot宛ての返信で、管理者が「replying」状態のときのみ処理
-    if (
-        not admin_state
-        or admin_state.get("stage") != "replying"
-        or not message.reply_to_message
-        or not getattr(message.reply_to_message.from_user, "is_bot", False)
-    ):
-        return
-
-    target_id = admin_state["target"]
-    text = message.text.strip()
-
-    await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{text}")
-    await message.answer("✅ ユーザーに返信を送信しました。")
-    STATE.pop(message.from_user.id, None)
 
 # === 起動 ===
 async def main():
