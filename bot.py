@@ -313,14 +313,116 @@ async def help_cmd(message: types.Message):
         "🧭 コマンド一覧\n\n"
         "【ユーザー】\n"
         "/start - 購入を開始\n"
-        "/保証 - 保証申請を行う\n\n"
+        "/保証 - 保証申請を行う\n"
+        "/contact - 管理者に問い合わせ\n\n"
         "【管理者】\n"
         "/addstock 通話可能|データ - 在庫を追加\n"
         "/stock - 在庫確認\n"
         "/config - 価格やリンクを変更\n"
+        "/reply <ID> <本文> - 問い合わせへの返信\n"
         "/help - この一覧を表示"
     )
 
+
+# ⬇⬇⬇⬇⬇ ここに「問い合わせ機能」部分を挿入！ ⬇⬇⬇⬇⬇
+
+# === /contact ===
+@dp.message(Command("contact"))
+async def contact_start(message: types.Message):
+    uid = message.from_user.id
+    STATE[uid] = {"stage": "contact"}
+    await message.answer(
+        "📞 お問い合わせモードを開始しました。\n"
+        "ご質問・不具合・購入後の相談などを送ってください。\n"
+        "（送信した内容は管理者に転送されます）\n\n"
+        "終了するには /cancel と入力してください。"
+    )
+
+
+# === /cancel ===
+@dp.message(Command("cancel"))
+async def cancel_mode(message: types.Message):
+    uid = message.from_user.id
+    if uid in STATE:
+        STATE.pop(uid)
+        await message.answer("🟢 お問い合わせモードを終了しました。")
+    else:
+        await message.answer("⚠️ 現在アクティブなモードはありません。")
+
+
+# === 問い合わせメッセージ受信（ユーザー → 管理者） ===
+@dp.message(F.text)
+async def handle_contact_message(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+
+    if state and state.get("stage") == "contact":
+        text = message.text.strip()
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🗣️ この人に返信", callback_data=f"reply_{uid}")]
+            ]
+        )
+        await bot.send_message(
+            ADMIN_ID,
+            f"📩 お問い合わせ受信\n\n"
+            f"👤 {message.from_user.full_name}\n"
+            f"🆔 {uid}\n"
+            f"💬 内容:\n{text}",
+            reply_markup=kb
+        )
+        await message.answer("📨 管理者に送信しました。返信をお待ちください。")
+        return
+
+
+# === 管理者がボタンで返信選択 ===
+@dp.callback_query(F.data.startswith("reply_"))
+async def admin_reply_button(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("権限がありません。", show_alert=True)
+        return
+
+    target_id = int(callback.data.split("_")[1])
+    STATE[callback.from_user.id] = {"stage": "replying", "target": target_id}
+    await callback.message.answer(
+        f"✏️ ユーザー {target_id} への返信内容を入力してください。",
+        reply_markup=ForceReply(selective=True)
+    )
+    await callback.answer()
+
+
+# === 管理者が /reply コマンドで返信 ===
+@dp.message(Command("reply"))
+async def admin_reply_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("権限がありません。")
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("使い方: /reply <ユーザーID> <本文>")
+        return
+
+    target_id = int(parts[1])
+    text = parts[2]
+    await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{text}")
+    await message.answer("✅ 返信を送信しました。")
+
+
+# === 管理者が ForceReply 経由で返信入力した場合 ===
+@dp.message(F.reply_to_message)
+async def handle_admin_reply(message: types.Message):
+    admin_state = STATE.get(message.from_user.id)
+    if not admin_state or admin_state.get("stage") != "replying":
+        return
+
+    target_id = admin_state["target"]
+    await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{message.text}")
+    await message.answer("✅ 返信を送信しました。")
+    STATE.pop(message.from_user.id, None)
+
+# ⬆⬆⬆⬆⬆ ここまでが「問い合わせ機能」 ⬆⬆⬆⬆⬆
 
 # === 管理者の設定入力処理（最後に配置） ===
 @dp.message(F.text)
