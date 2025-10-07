@@ -441,12 +441,20 @@ async def admin_reply_cmd(message: types.Message):
 @dp.message(F.reply_to_message)
 async def handle_admin_reply(message: types.Message):
     admin_state = STATE.get(message.from_user.id)
-    if not admin_state or admin_state.get("stage") != "replying":
+    # ForceReply対象がbotのメッセージで、管理者のSTATEが"replying"のみ処理
+    if (
+        not admin_state
+        or admin_state.get("stage") != "replying"
+        or not message.reply_to_message
+        or not message.reply_to_message.from_user
+        or message.reply_to_message.from_user.id != (await bot.me()).id
+    ):
         return
 
     target_id = admin_state["target"]
-    await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{message.text}")
-    await message.answer("✅ 返信を送信しました。")
+    text = message.text.strip()
+    await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{text}")
+    await message.answer("✅ ユーザーに返信を送信しました。")
     STATE.pop(message.from_user.id, None)
 
 
