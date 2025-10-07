@@ -1,7 +1,7 @@
 import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 import json
 
 # === 基本設定 ===
@@ -11,7 +11,7 @@ with open("config.json", "r", encoding="utf-8") as f:
 bot = Bot(token=CONFIG["TELEGRAM_TOKEN"])
 dp = Dispatcher()
 
-ADMIN_ID = 5397061486  # ← あなたのTelegram ID
+ADMIN_ID = 5397061486  # あなたのTelegram ID
 STATE = {}
 STOCK = {"通話可能": [], "データ": []}
 
@@ -26,6 +26,7 @@ NOTICE = (
     "使用できなかった場合でも、録画がないと保証対象外になります。"
 )
 
+
 def is_admin(uid):
     return uid == ADMIN_ID
 
@@ -34,8 +35,7 @@ def is_admin(uid):
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     STATE[message.from_user.id] = {"stage": "select"}
-    
-    # --- まずコマンド一覧を表示 ---
+
     commands_text = (
         "🧭 コマンド一覧\n\n"
         "【ユーザー向け】\n"
@@ -47,8 +47,7 @@ async def start_cmd(message: types.Message):
         "/help - この一覧を表示\n"
     )
     await message.answer(commands_text)
-    
-    # --- 次に購入メニューを表示 ---
+
     stock_info = f"📦 在庫状況\n通話可能: {len(STOCK['通話可能'])}枚\nデータ: {len(STOCK['データ'])}枚\n"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"📞 通話可能 ({len(STOCK['通話可能'])}枚)", callback_data="type_通話可能")],
@@ -63,7 +62,6 @@ async def select_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     choice = callback.data.split("_")[1]
 
-    # 在庫チェック
     if len(STOCK[choice]) == 0:
         await callback.message.answer(f"⚠️ 現在「{choice}」の在庫がありません。追加されるまでお待ちください。")
         await callback.answer()
@@ -89,28 +87,63 @@ async def handle_done(message: types.Message):
         await message.answer("⚠️ まず /start から始めてください。")
         return
 
-    STATE[uid]["stage"] = "pending_confirm"
+    STATE[uid]["stage"] = "waiting_screenshot"
     choice = state["type"]
     price = LINKS[choice]["price"]
 
-    await message.answer("🕐 受け取り確認中です。しばらくお待ちください。")
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ 確認完了", callback_data=f"confirm_{uid}")
-    ]])
-    await bot.send_message(
-        ADMIN_ID,
-        f"📩 支払い完了報告\n"
-        f"👤 ユーザー: {message.from_user.full_name}\n"
-        f"🆔 ユーザーID: `{uid}`\n"
-        f"📦 タイプ: {choice}\n"
-        f"💴 金額: {price}円",
-        parse_mode="Markdown",
-        reply_markup=kb
+    await message.answer(
+        f"💴 支払いありがとうございます！\n\n"
+        f"⚠️ お手数ですが、**支払い完了画面のスクリーンショット**を送ってください。\n"
+        f"（金額や相手名が確認できるようにお願いします）"
     )
 
 
-# === 管理者：承認ボタン ===
+# === 支払いスクショ受信 ===
+@dp.message(F.photo)
+async def handle_payment_photo(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+
+    # 管理者：在庫追加モード
+    if state and state.get("stage") == "adding_stock":
+        choice = state["type"]
+        file_id = message.photo[-1].file_id
+        STOCK[choice].append(file_id)
+        await message.answer(f"✅ {choice} に在庫を追加しました。現在 {len(STOCK[choice])}枚")
+        STATE.pop(uid, None)
+        return
+
+    # ユーザー：支払いスクショ提出中
+    if not state or state.get("stage") != "waiting_screenshot":
+        return
+
+    choice = state["type"]
+    price = LINKS[choice]["price"]
+    STATE[uid]["stage"] = "pending_confirm"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ 確認完了", callback_data=f"confirm_{uid}"),
+            InlineKeyboardButton(text="❌ 確認拒否", callback_data=f"deny_{uid}")
+        ]
+    ])
+
+    await bot.send_photo(
+        ADMIN_ID,
+        message.photo[-1].file_id,
+        caption=(f"📩 支払いスクリーンショット受信\n\n"
+                 f"👤 ユーザー: {message.from_user.full_name}\n"
+                 f"🆔 ユーザーID: `{uid}`\n"
+                 f"📦 タイプ: {choice}\n"
+                 f"💴 金額: {price}円\n\n"
+                 f"支払い内容を確認して、以下のボタンで処理してください。"),
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+    await message.answer("🕐 スクリーンショットを受け取りました。管理者の確認をお待ちください。")
+
+
+# === 管理者：支払い確認完了 ===
 @dp.callback_query(F.data.startswith("confirm_"))
 async def confirm_send(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -133,8 +166,52 @@ async def confirm_send(callback: types.CallbackQuery):
     file_id = STOCK[choice].pop(0)
     await bot.send_photo(target_id, file_id, caption=f"✅ {choice}の商品をお送りします。ありがとうございました！")
     await bot.send_message(target_id, NOTICE)
-    await callback.message.edit_text(f"✅ {choice} の商品を送信しました。残り在庫: {len(STOCK[choice])}枚")
+    await callback.message.edit_caption(f"✅ {choice} の商品を送信しました。残り在庫: {len(STOCK[choice])}枚")
+    STATE.pop(target_id, None)
+    await callback.answer("✅ 商品を送信しました。")
 
+
+# === 管理者：支払い確認拒否（理由入力対応） ===
+@dp.callback_query(F.data.startswith("deny_"))
+async def deny_payment(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("権限がありません。", show_alert=True)
+        return
+
+    target_id = int(callback.data.split("_")[1])
+    state = STATE.get(target_id)
+    if not state:
+        await callback.message.answer("⚠️ ユーザー情報が見つかりません。")
+        return
+
+    # 理由入力待ち状態を記録
+    STATE[callback.from_user.id] = {"stage": "awaiting_reason", "target": target_id}
+    await callback.message.answer(
+        "💬 拒否理由を入力してください。\n例：金額不足、スクショ不明瞭、別アカウント名など。",
+        reply_markup=ForceReply(selective=True)
+    )
+    await callback.answer("拒否理由の入力を待っています。")
+
+
+# === 管理者が拒否理由を送信したとき ===
+@dp.message(F.reply_to_message)
+async def handle_reason_reply(message: types.Message):
+    admin_state = STATE.get(message.from_user.id)
+    if not admin_state or admin_state.get("stage") != "awaiting_reason":
+        return
+
+    target_id = admin_state["target"]
+    reason = message.text.strip()
+
+    # ユーザーに理由を送信
+    await bot.send_message(
+        target_id,
+        f"⚠️ お支払い内容が確認できませんでした。\n理由：{reason}\n\n"
+        "再度ご確認のうえ、『完了』と送信してください。"
+    )
+
+    await message.answer("❌ 拒否理由をユーザーに送信しました。")
+    STATE.pop(message.from_user.id, None)
     STATE.pop(target_id, None)
 
 
@@ -152,20 +229,6 @@ async def addstock(message: types.Message):
 
     STATE[message.from_user.id] = {"stage": "adding_stock", "type": parts[1]}
     await message.answer(f"🖼️ {parts[1]} の在庫画像を送ってください。")
-
-
-# === 在庫登録 ===
-@dp.message(F.photo)
-async def handle_photo(message: types.Message):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-    if not state or state.get("stage") != "adding_stock":
-        return
-    choice = state["type"]
-    file_id = message.photo[-1].file_id
-    STOCK[choice].append(file_id)
-    await message.answer(f"✅ {choice} に在庫を追加しました。現在 {len(STOCK[choice])}枚")
-    STATE.pop(uid, None)
 
 
 # === /stock ===
@@ -207,10 +270,10 @@ async def handle_video(message: types.Message):
         return
 
     choice = state["type"]
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ 保証する", callback_data=f"approve_{uid}"),
-        InlineKeyboardButton(text="❌ 却下", callback_data=f"deny_{uid}")
-    ]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ 保証する", callback_data=f"approve_{uid}"),
+         InlineKeyboardButton(text="❌ 却下", callback_data=f"deny_{uid}")]
+    ])
     await bot.send_video(
         ADMIN_ID,
         message.video.file_id,
@@ -219,40 +282,6 @@ async def handle_video(message: types.Message):
     )
     await message.answer("🎞️ 動画を受け取りました。管理者の確認をお待ちください。")
     STATE[uid]["stage"] = "warranty_pending"
-
-
-# === 管理者：保証承認・却下 ===
-@dp.callback_query(F.data.startswith(("approve_", "deny_")))
-async def warranty_decision(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("権限がありません。", show_alert=True)
-        return
-
-    target_id = int(callback.data.split("_")[1])
-    action = callback.data.split("_")[0]
-    state = STATE.get(target_id)
-    if not state:
-        await callback.message.answer("⚠️ データが見つかりません。")
-        return
-
-    choice = state["type"]
-
-    if action == "approve_":
-        if not STOCK[choice]:
-            await callback.answer("❌ 在庫がありません。", show_alert=True)
-            return
-        file_id = STOCK[choice].pop(0)
-        await bot.send_photo(target_id, file_id, caption=f"✅ 保証により {choice} を再送します。")
-        await callback.message.edit_text(f"✅ {choice} の保証を承認し、再送しました。")
-        await bot.send_message(target_id, NOTICE)
-    else:
-        try:
-            await callback.message.edit_caption("❌ 保証リクエストを却下しました。")
-        except:
-            await callback.message.answer("❌ 保証リクエストを却下しました。")
-        await bot.send_message(target_id, "⚠️ 保証リクエストは却下されました。")
-
-    STATE.pop(target_id, None)
 
 
 # === /help ===
