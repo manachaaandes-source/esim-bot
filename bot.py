@@ -324,8 +324,6 @@ async def help_cmd(message: types.Message):
     )
 
 
-# ⬇⬇⬇⬇⬇ ここに「問い合わせ機能」部分を挿入！ ⬇⬇⬇⬇⬇
-
 # === /contact ===
 @dp.message(Command("contact"))
 async def contact_start(message: types.Message):
@@ -350,12 +348,13 @@ async def cancel_mode(message: types.Message):
         await message.answer("⚠️ 現在アクティブなモードはありません。")
 
 
-# === 問い合わせメッセージ受信（ユーザー → 管理者） ===
+# === 問い合わせメッセージ or /config入力 統合ハンドラ ===
 @dp.message(F.text)
-async def handle_contact_message(message: types.Message):
+async def handle_contact_or_config(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
 
+    # 🔹 問い合わせモード中のメッセージ
     if state and state.get("stage") == "contact":
         text = message.text.strip()
 
@@ -374,6 +373,34 @@ async def handle_contact_message(message: types.Message):
         )
         await message.answer("📨 管理者に送信しました。返信をお待ちください。")
         return
+
+    # 🔹 管理者が /config 入力中
+    if is_admin(uid) and state and state.get("stage", "").startswith("config_"):
+        target = state["target"]
+        mode = state["stage"].split("_")[1]
+        new_value = message.text.strip()
+
+        if mode == "price":
+            if not new_value.isdigit():
+                return await message.answer("⚠️ 数値のみを入力してください。")
+            LINKS[target]["price"] = int(new_value)
+            msg = f"💴 {target} の価格を {new_value} 円に更新しました。"
+        else:
+            if not (new_value.startswith("http://") or new_value.startswith("https://")):
+                return await message.answer("⚠️ 有効なURLを入力してください。")
+            LINKS[target]["url"] = new_value
+            msg = f"🔗 {target} のリンクを更新しました。\n{new_value}"
+
+        CONFIG["LINKS"] = LINKS
+        with open("config.json", "w", encoding="utf-8") as f:
+            json.dump(CONFIG, f, ensure_ascii=False, indent=4)
+
+        STATE.pop(uid, None)
+        await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
+        return
+
+    # 🔹 その他はスルー
+    return
 
 
 # === 管理者がボタンで返信選択 ===
@@ -421,39 +448,6 @@ async def handle_admin_reply(message: types.Message):
     await bot.send_message(target_id, f"👨‍💼 管理者からの返信:\n{message.text}")
     await message.answer("✅ 返信を送信しました。")
     STATE.pop(message.from_user.id, None)
-
-# ⬆⬆⬆⬆⬆ ここまでが「問い合わせ機能」 ⬆⬆⬆⬆⬆
-
-# === 管理者の設定入力処理（最後に配置） ===
-@dp.message(F.text)
-async def handle_config_input(message: types.Message):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-
-    if not is_admin(uid) or not state or not state.get("stage", "").startswith("config_"):
-        return
-
-    target = state["target"]
-    mode = state["stage"].split("_")[1]
-    new_value = message.text.strip()
-
-    if mode == "price":
-        if not new_value.isdigit():
-            return await message.answer("⚠️ 数値のみを入力してください。")
-        LINKS[target]["price"] = int(new_value)
-        msg = f"💴 {target} の価格を {new_value} 円に更新しました。"
-    else:
-        if not (new_value.startswith("http://") or new_value.startswith("https://")):
-            return await message.answer("⚠️ 有効なURLを入力してください。")
-        LINKS[target]["url"] = new_value
-        msg = f"🔗 {target} のリンクを更新しました。\n{new_value}"
-
-    CONFIG["LINKS"] = LINKS
-    with open("config.json", "w", encoding="utf-8") as f:
-        json.dump(CONFIG, f, ensure_ascii=False, indent=4)
-
-    STATE.pop(uid, None)
-    await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
 
 
 # === 起動 ===
