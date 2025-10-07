@@ -214,6 +214,84 @@ async def handle_reason_reply(message: types.Message):
     STATE.pop(message.from_user.id, None)
     STATE.pop(target_id, None)
 
+# === 管理者: 設定メニュー (/config) ===
+@dp.message(Command("config"))
+async def config_menu(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("権限がありません。")
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💴 価格を変更", callback_data="cfg_price")],
+        [InlineKeyboardButton(text="🔗 支払いリンクを変更", callback_data="cfg_link")]
+    ])
+    await message.answer("⚙️ 設定メニュー\nどの設定を変更しますか？", reply_markup=kb)
+
+
+# === 設定タイプ選択 ===
+@dp.callback_query(F.data.startswith("cfg_"))
+async def cfg_select(callback: types.CallbackQuery):
+    mode = callback.data.split("_")[1]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💾 データ", callback_data=f"cfgsel_{mode}_データ")],
+        [InlineKeyboardButton(text="📞 通話可能", callback_data=f"cfgsel_{mode}_通話可能")]
+    ])
+    await callback.message.answer(
+        f"🛠 どちらのタイプの{'価格' if mode=='price' else 'リンク'}を変更しますか？",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+# === 各タイプ選択後の入力待機 ===
+@dp.callback_query(F.data.startswith("cfgsel_"))
+async def cfgsel_type(callback: types.CallbackQuery):
+    _, mode, target = callback.data.split("_")
+    uid = callback.from_user.id
+    STATE[uid] = {"stage": f"config_{mode}", "target": target}
+    await callback.message.answer(
+        f"✏️ 新しい{'価格(数値のみ)' if mode=='price' else '支払いリンク(URL)'}を入力してください。\n\n"
+        f"対象: {target}"
+    )
+    await callback.answer()
+
+
+# === 管理者の入力処理 ===
+@dp.message(F.text)
+async def handle_config_input(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+
+    if not state or not state["stage"].startswith("config_"):
+        return
+
+    target = state["target"]
+    mode = state["stage"].split("_")[1]
+    new_value = message.text.strip()
+
+    # 価格変更
+    if mode == "price":
+        if not new_value.isdigit():
+            await message.answer("⚠️ 数値のみを入力してください。")
+            return
+        LINKS[target]["price"] = int(new_value)
+        msg = f"💴 {target} の価格を {new_value} 円に更新しました。"
+
+    # リンク変更
+    elif mode == "link":
+        if not (new_value.startswith("http://") or new_value.startswith("https://")):
+            await message.answer("⚠️ 有効なURLを入力してください。")
+            return
+        LINKS[target]["url"] = new_value
+        msg = f"🔗 {target} のリンクを更新しました。\n{new_value}"
+
+    # config.json に保存
+    CONFIG["LINKS"] = LINKS
+    with open("config.json", "w", encoding="utf-8") as f:
+        json.dump(CONFIG, f, ensure_ascii=False, indent=4)
+
+    STATE.pop(uid, None)
+    await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
 
 # === 管理者：在庫追加 ===
 @dp.message(Command("addstock"))
