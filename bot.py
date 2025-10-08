@@ -9,33 +9,46 @@ import os
 with open("config.json", "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
+# === データ読み込み・保存 ===
 DATA_FILE = "data.json"
 
-# ✅ デフォルトリンク（これを先に置く）
+# ✅ デフォルトリンク
 DEFAULT_LINKS = {
     "通話可能": {"url": "https://qr.paypay.ne.jp/p2p01_uMrph5YFDveRCFmw", "price": 3000},
     "データ": {"url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I", "price": 1500},
 }
 
+def ensure_data_file():
+    """data.json が存在しない場合、自動生成"""
+    if not os.path.exists(DATA_FILE):
+        data = {
+            "STOCK": {"通話可能": [], "データ": []},
+            "LINKS": DEFAULT_LINKS,
+            "CODES": {}
+        }
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        print("🆕 data.json を新規作成しました。")
+        return data
+    else:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+
 def load_data():
-    """起動時に保存データを読み込む"""
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                print("💾 data.json を読み込みました。")
-                return (
-                    data.get("STOCK", {"通話可能": [], "データ": []}),
-                    data.get("LINKS", DEFAULT_LINKS),
-                    data.get("CODES", {})
-                )
-        except Exception as e:
-            print(f"⚠️ データ読み込み失敗: {e}")
-    # ⚠️ ←ここ！！「3つ返す」ように修正
-    return {"通話可能": [], "データ": []}, DEFAULT_LINKS, {}
+    """JSONから在庫・リンク・コードを安全に読み込む"""
+    try:
+        data = ensure_data_file()
+        stock = data.get("STOCK", {"通話可能": [], "データ": []})
+        links = data.get("LINKS", DEFAULT_LINKS)
+        codes = data.get("CODES", {})
+        print("💾 data.json を読み込みました。")
+        return stock, links, codes
+    except Exception as e:
+        print(f"⚠️ データ読み込み失敗: {e}")
+        return {"通話可能": [], "データ": []}, DEFAULT_LINKS, {}
 
 def save_data():
-    """現在の在庫・リンクを保存"""
+    """現在の在庫・リンク・コードを保存"""
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump({"STOCK": STOCK, "LINKS": LINKS, "CODES": CODES}, f, ensure_ascii=False, indent=4)
@@ -43,21 +56,14 @@ def save_data():
     except Exception as e:
         print(f"⚠️ データ保存失敗: {e}")
 
+# === JSON 読み込み実行 ===
+STOCK, LINKS, CODES = load_data()
+
 bot = Bot(token=CONFIG["TELEGRAM_TOKEN"])
 dp = Dispatcher()
 
 ADMIN_ID = 5397061486  # あなたのTelegram ID
 STATE = {}
-STOCK = {"通話可能": [], "データ": []}
-
-DEFAULT_LINKS = {
-    "通話可能": {"url": "https://qr.paypay.ne.jp/p2p01_uMrph5YFDveRCFmw", "price": 3000},
-    "データ": {"url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I", "price": 1500},
-}
-
-# JSON から在庫とリンクを復元
-STOCK, LINKS, CODES = load_data()
-CODES = {}  # 追加（存在しない場合の初期化用）
 
 NOTICE = (
     "⚠️ ご注意\n"
