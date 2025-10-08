@@ -642,24 +642,46 @@ async def handle_text_message(message: types.Message):
 
     # 🟢 管理者が /config モード中
     if is_admin(uid) and state and state.get("stage", "").startswith("config_"):
+        # 🛡️ ガード追加：stateにtargetがない場合はスキップ
+        if "target" not in state:
+            return  # 管理者設定以外の状態では何もしない
+
         target = state["target"]
-        mode = state["stage"].split("_")[1]
+        stage = state["stage"]
+        parts = stage.split("_")
+
+        # parts 例：
+        # ["config", "price"]
+        # ["config", "discount", "price"]
+        # ["config", "discount", "link"]
+        # ["config", "link"]
+
+        if len(parts) == 2:
+            mode = parts[1]  # 通常 price / link
+        elif len(parts) == 3:
+            mode = f"{parts[1]}_{parts[2]}"  # discount_price / discount_link
+        else:
+            mode = "unknown"
+
         new_value = message.text.strip()
 
+        # --- 通常価格変更 ---
         if mode == "price":
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみを入力してください。")
             LINKS[target]["price"] = int(new_value)
             save_data()
             msg = f"💴 {target} の価格を {new_value} 円に更新しました。"
-            
+
+        # --- 割引価格変更 ---
         elif mode == "discount_price":
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみを入力してください。")
             LINKS[target]["discount_price"] = int(new_value)
             save_data()
             msg = f"💸 {target} の割引価格を {new_value} 円に更新しました。"
-            
+
+        # --- 割引リンク変更 ---
         elif mode == "discount_link":
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ 有効なURLを入力してください。")
@@ -667,21 +689,24 @@ async def handle_text_message(message: types.Message):
             save_data()
             msg = f"🔗 {target} の割引リンクを更新しました。\n{new_value}"
 
-
-        else:
+        # --- 通常リンク変更 ---
+        elif mode == "link":
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ 有効なURLを入力してください。")
             LINKS[target]["url"] = new_value
             save_data()
             msg = f"🔗 {target} のリンクを更新しました。\n{new_value}"
 
+        else:
+            return await message.answer("⚠️ 不明なモードです。")
+
         CONFIG["LINKS"] = LINKS
         with open("config.json", "w", encoding="utf-8") as f:
             json.dump(CONFIG, f, ensure_ascii=False, indent=4)
 
-            STATE.pop(uid, None)
-            await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
-            return
+        STATE.pop(uid, None)
+        await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
+        return
 
 # === 起動 ===
 async def main():
