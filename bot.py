@@ -364,6 +364,7 @@ async def admin_config_edit(message: types.Message):
     uid = message.from_user.id
     if not is_admin(uid):
         return
+
     state = STATE.get(uid)
     if not state or not state["stage"].startswith("config_"):
         return
@@ -379,6 +380,9 @@ async def admin_config_edit(message: types.Message):
     if mode.endswith("price"):
         if not new_value.isdigit():
             return await message.answer("⚠️ 数値のみ入力してください。")
+
+        LINKS.setdefault(target, {})
+        LINKS[target].setdefault(mode, None)
         LINKS[target][mode] = int(new_value)
         kind = "割引価格" if "discount" in mode else "通常価格"
         msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
@@ -387,6 +391,9 @@ async def admin_config_edit(message: types.Message):
     elif mode.endswith("link"):
         if not (new_value.startswith("http://") or new_value.startswith("https://")):
             return await message.answer("⚠️ URL形式で入力してください。")
+
+        LINKS.setdefault(target, {})
+        LINKS[target].setdefault(mode, None)
         LINKS[target][mode] = new_value
         kind = "割引リンク" if "discount" in mode else "通常リンク"
         msg = f"🔗 {target} の{kind}を更新しました。"
@@ -394,10 +401,10 @@ async def admin_config_edit(message: types.Message):
     else:
         return await message.answer("⚠️ 不明なモードです。")
 
+    # --- 保存＆状態クリア ---
     save_data()
     STATE.pop(uid, None)
     await message.answer(f"✅ {msg}")
-
 
 # === /help ===
 @dp.message(Command("help"))
