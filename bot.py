@@ -73,8 +73,25 @@ def is_admin(uid): return uid == ADMIN_ID
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     STATE[message.from_user.id] = {"stage": "select"}
-    stock_info = f"📦 在庫状況\n通話可能: {len(STOCK['通話可能'])}枚\nデータ: {len(STOCK['データ'])}枚\n"
 
+    # --- コマンド一覧 ---
+    commands_text = (
+        "🧭 コマンド一覧\n\n"
+        "【ユーザー向け】\n"
+        "/start - 購入メニューを開く\n"
+        "/保証 - 保証申請を行う\n\n"
+        "【管理者専用】\n"
+        "/addstock 通話可能|データ - 在庫を追加\n"
+        "/stock - 在庫確認\n"
+        "/config - 設定変更（価格・リンク）\n"
+        "/code - 割引コードを発行\n"
+        "/codes - コード一覧表示\n"
+        "/help - この一覧を表示\n"
+    )
+    await message.answer(commands_text)
+
+    # --- 商品選択 ---
+    stock_info = f"📦 在庫状況\n通話可能: {len(STOCK['通話可能'])}枚\nデータ: {len(STOCK['データ'])}枚\n"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"📞 通話可能 ({len(STOCK['通話可能'])}枚)", callback_data="type_通話可能")],
         [InlineKeyboardButton(text=f"💾 データ ({len(STOCK['データ'])}枚)", callback_data="type_データ")]
@@ -87,68 +104,32 @@ async def start_cmd(message: types.Message):
 async def select_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     choice = callback.data.split("_")[1]
+
     if len(STOCK[choice]) == 0:
         await callback.message.answer(f"⚠️ 現在「{choice}」の在庫がありません。")
         await callback.answer()
         return
-    STATE[uid] = {"stage": "ask_code", "type": choice}
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎟️ 割引コードあり", callback_data="has_code")],
-        [InlineKeyboardButton(text="🙅‍♂️ なし", callback_data="no_code")]
-    ])
-    await callback.message.answer(f"{choice}ですね。割引コードはお持ちですか？", reply_markup=kb)
-    await callback.answer()
-
-
-# === 割引コード入力 ===
-@dp.callback_query(F.data == "has_code")
-async def ask_code(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    STATE[uid]["stage"] = "enter_code"
-    await callback.message.answer("🎟️ 割引コードを入力してください（例: RKTN-ABC123）")
-    await callback.answer()
-
-
-# === 割引なし支払い ===
-@dp.callback_query(F.data == "no_code")
-async def no_code(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    STATE[uid]["discount"] = False
-    await proceed_to_payment(callback.message, discount=False)
-    await callback.answer()
-
-
-async def proceed_to_payment(message, discount=False):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-    choice = state["type"]
-
-    # LINKSが壊れている場合修復
-    global LINKS
-    if not LINKS or not isinstance(LINKS, dict) or not LINKS.get(choice):
-        LINKS = DEFAULT_LINKS.copy()
-        save_data()
-        print(f"⚙️ LINKS修復: {choice}を再生成")
-
-    product = LINKS.get(choice, DEFAULT_LINKS[choice])
-    if discount:
-        price = product.get("discount_price", product["price"])
-        link = product.get("discount_url", product["url"])
-        text = (
-            f"{choice}ですね。\n💸 割引適用！ {price}円 💰\n\n"
-            f"こちらのPayPayリンクからお支払いください👇\n{link}\n\n支払い完了後に『完了』と送ってください。"
-        )
-    else:
-        price = product["price"]
-        link = product["url"]
-        text = (
-            f"{choice}ですね。\nお支払い金額は {price} 円です💰\n\n"
-            f"こちらのPayPayリンクからお支払いください👇\n{link}\n\n支払い完了後に『完了』と送ってください。"
-        )
 
     STATE[uid] = {"stage": "waiting_payment", "type": choice}
-    await message.answer(text)
+    product = LINKS.get(choice, DEFAULT_LINKS[choice])
+
+    # --- 正規料金メッセージ ---
+    await callback.message.answer(
+        f"{choice}ですね。\n"
+        f"お支払い金額は {product['price']} 円です💰\n\n"
+        f"こちらのPayPayリンクからお支払いください👇\n"
+        f"{product['url']}\n\n"
+        "支払い完了後に『完了』と送ってください。"
+    )
+
+    # --- 割引コード案内 ---
+    await callback.message.answer(
+        "🎟️ 割引コードをお持ちの場合は、今ここで入力してください。\n"
+        "（例：RKTN-ABC123）\n"
+        "※持っていない場合は無視して『完了』と送ってください。"
+    )
+
+    await callback.answer()
 
 
 # === 割引コード認証 ===
@@ -156,20 +137,35 @@ async def proceed_to_payment(message, discount=False):
 async def check_code(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
-    if not state or state.get("stage") != "enter_code": return
-    code = message.text.strip().upper()
+    if not state or state.get("stage") != "waiting_payment":
+        return
 
+    code = message.text.strip().upper()
     if code not in CODES:
         return await message.answer("⚠️ 無効なコードです。")
     if CODES[code]["used"]:
-        return await message.answer("⚠️ このコードは使用済みです。")
-    if CODES[code]["type"] != state["type"]:
+        return await message.answer("⚠️ このコードはすでに使用されています。")
+
+    choice = state["type"]
+    if CODES[code]["type"] != choice:
         return await message.answer("⚠️ このコードは別タイプ用です。")
 
+    # コード承認 → 使用済み保存
     CODES[code]["used"] = True
     save_data()
-    await message.answer("🎉 コード承認！割引適用します。")
-    await proceed_to_payment(message, discount=True)
+
+    # 割引価格を取得して再送
+    product = LINKS.get(choice, DEFAULT_LINKS[choice])
+    price = product.get("discount_price", product["price"])
+    link = product.get("discount_url", product["url"])
+
+    await message.answer("🎉 割引コードが承認されました！特別価格が適用されます✨")
+    await message.answer(
+        f"💸 割引後の支払い金額は {price} 円です。\n\n"
+        f"こちらのPayPayリンクからお支払いください👇\n"
+        f"{link}\n\n"
+        "支払い完了後に『完了』と送ってください。"
+    )
 
 
 # === 支払い完了報告 ===
@@ -304,38 +300,75 @@ async def list_codes(message: types.Message):
     await message.answer(text)
 
 
-# === /保証 ===
-@dp.message(Command("保証"))
-async def warranty_start(message: types.Message):
+# === /config ===
+@dp.message(Command("config"))
+async def config_menu(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし。")
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💾 データ", callback_data="warranty_データ")],
-        [InlineKeyboardButton(text="📞 通話可能", callback_data="warranty_通話可能")]
+        [InlineKeyboardButton(text="💴 価格変更", callback_data="cfg_price")],
+        [InlineKeyboardButton(text="💸 割引価格設定", callback_data="cfg_discount_price")],
+        [InlineKeyboardButton(text="🔗 リンク変更", callback_data="cfg_link")],
+        [InlineKeyboardButton(text="🔗 割引リンク設定", callback_data="cfg_discount_link")]
     ])
-    await message.answer("どちらのタイプの保証ですか？", reply_markup=kb)
+    await message.answer("⚙️ どの設定を変更しますか？", reply_markup=kb)
 
 
-@dp.callback_query(F.data.startswith("warranty_"))
-async def warranty_select(callback: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("cfg_"))
+async def cfg_select(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    choice = callback.data.split("_")[1]
-    STATE[uid] = {"stage": "waiting_video", "type": choice}
-    await callback.message.answer("保証対象の動画を送信してください。")
+    mode = callback.data.split("_")[1]
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💾 データ", callback_data=f"cfgsel_{mode}_データ")],
+        [InlineKeyboardButton(text="📞 通話可能", callback_data=f"cfgsel_{mode}_通話可能")]
+    ])
+    label = "リンク" if "link" in mode else "価格"
+    await callback.message.answer(f"🛠 どちらの{label}を変更しますか？", reply_markup=kb)
     await callback.answer()
 
 
-@dp.message(F.video)
-async def handle_video(message: types.Message):
+@dp.callback_query(F.data.startswith("cfgsel_"))
+async def cfgsel_type(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    parts = callback.data.split("_")
+    mode = parts[1]
+    target = parts[2]
+    STATE[uid] = {"stage": f"config_{mode}", "target": target}
+    msg = "✏️ 新しい価格を入力してください。" if "price" in mode else "✏️ 新しいリンク(URL)を入力してください。"
+    await callback.message.answer(f"{msg}\n対象: {target}")
+    await callback.answer()
+
+
+# === 管理者の入力反映 ===
+@dp.message(F.text)
+async def admin_config_edit(message: types.Message):
     uid = message.from_user.id
+    if not is_admin(uid): return
     state = STATE.get(uid)
-    if not state or state["stage"] != "waiting_video": return
-    choice = state["type"]
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ 保証する", callback_data=f"approve_{uid}"),
-         InlineKeyboardButton(text="❌ 却下", callback_data=f"deny_{uid}")]
-    ])
-    await bot.send_video(ADMIN_ID, message.video.file_id, caption=f"🎥 保証申請\n{message.from_user.full_name} ({uid})\nタイプ: {choice}", reply_markup=kb)
-    await message.answer("🎞️ 動画を受け取りました。管理者の確認をお待ちください。")
-    STATE[uid]["stage"] = "warranty_pending"
+    if not state or not state["stage"].startswith("config_"): return
+
+    stage = state["stage"]
+    target = state["target"]
+    new_value = message.text.strip()
+
+    mode = stage.replace("config_", "")
+    if "price" in mode:
+        if not new_value.isdigit():
+            return await message.answer("⚠️ 数値のみ入力可能です。")
+        LINKS[target][mode] = int(new_value)
+        msg = f"💴 {target} の{ '割引価格' if 'discount' in mode else '価格' }を {new_value} 円に更新しました。"
+    else:
+        if not (new_value.startswith("http://") or new_value.startswith("https://")):
+            return await message.answer("⚠️ URL形式で入力してください。")
+        LINKS[target][mode] = new_value
+        msg = f"🔗 {target} の{ '割引リンク' if 'discount' in mode else 'リンク' }を更新しました。"
+
+    save_data()
+    STATE.pop(uid, None)
+    await message.answer(f"✅ {msg}")
+
 
 
 # === /help ===
@@ -344,7 +377,7 @@ async def help_cmd(message: types.Message):
     await message.answer(
         "🧭 コマンド一覧\n\n"
         "【ユーザー】\n/start - 購入を開始\n/保証 - 保証申請\n\n"
-        "【管理者】\n/addstock 通話可能|データ\n/stock\n/code\n/codes\n/help"
+        "【管理者】\n/addstock 通話可能|データ\n/stock\n/code\n/codes\n/config\n/help"
     )
 
 
