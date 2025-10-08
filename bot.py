@@ -146,55 +146,52 @@ async def no_code(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# === 支払い案内（共通化・安全版） ===
+# === 支払い案内（共通化・完全対応版） ===
 async def proceed_to_payment(message, discount=False):
     uid = message.from_user.id
     state = STATE.get(uid)
 
-    # 🛡️ 安全ガード（/startを通っていない、またはtypeがない）
-    if not state or "type" not in state:
-        return await message.answer("⚠️ まず /start から始めてください。")
-
     choice = state["type"]
-
-    # 🔹 product情報を安全に取得
     product = LINKS.get(choice, {})
+
+    # 🔹 データ欠損を防ぐ（config.json or data.jsonに無くても動作）
     if not product:
-        # なければデフォルトリンクを補完
         product = DEFAULT_LINKS[choice]
         LINKS[choice] = product
         save_data()
 
-    # 🔹 必須キーを補完（欠けているとKeyErrorになる）
-    if "price" not in product:
-        product["price"] = DEFAULT_LINKS[choice]["price"]
-    if "url" not in product:
-        product["url"] = DEFAULT_LINKS[choice]["url"]
-    if "discount_price" not in product:
-        product["discount_price"] = product["price"]
-    if "discount_url" not in product:
-        product["discount_url"] = product["url"]
+    # 必須キーを補完
+    product.setdefault("price", DEFAULT_LINKS[choice]["price"])
+    product.setdefault("url", DEFAULT_LINKS[choice]["url"])
+    product.setdefault("discount_price", product["price"])
+    product.setdefault("discount_url", product["url"])
 
-    # --- 通常 / 割引モード処理 ---
+    # === メッセージ構築 ===
     if discount:
         normal_price = product["price"]
         price = product.get("discount_price", normal_price)
         link = product.get("discount_url", product["url"])
-        discount_info = f"💸 割引適用！通常 {normal_price}円 → 特別価格 {price}円 💰"
+        text = (
+            f"{choice}ですね。\n"
+            f"💸 割引適用！通常 {normal_price}円 → 特別価格 {price}円 💰\n\n"
+            f"こちらのPayPayリンクからお支払いください👇\n"
+            f"{link}\n\n"
+            "支払いが完了したら『完了』と送ってください。"
+        )
     else:
+        # ✅ 正規料金パターン
         price = product["price"]
         link = product["url"]
-        discount_info = f"💴 お支払い金額は {price} 円です。"
+        text = (
+            f"{choice}ですね。\n"
+            f"お支払い金額は {price} 円です💰\n\n"
+            f"こちらのPayPayリンクからお支払いください👇\n"
+            f"{link}\n\n"
+            "支払いが完了したら『完了』と送ってください。"
+        )
 
-    # ユーザーの状態を更新
     STATE[uid] = {"stage": "waiting_payment", "type": choice}
-
-    await message.answer(
-        f"{choice}ですね。\n{discount_info}\n\n"
-        f"こちらのPayPayリンクからお支払いください👇\n"
-        f"{link}\n\n"
-        "支払いが完了したら『完了』と送ってください。"
-    )
+    await message.answer(text)
 
 # === コード入力された場合 ===
 @dp.message(F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
