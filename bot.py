@@ -17,7 +17,6 @@ DEFAULT_LINKS = {
     "データ": {"url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I", "price": 1500},
 }
 
-# === データ保存・読み込み関数 ===
 def load_data():
     """起動時に保存データを読み込む"""
     if os.path.exists(DATA_FILE):
@@ -32,8 +31,8 @@ def load_data():
                 )
         except Exception as e:
             print(f"⚠️ データ読み込み失敗: {e}")
-    return {"通話可能": [], "データ": []}, DEFAULT_LINKS
-
+    # ⚠️ ←ここ！！「3つ返す」ように修正
+    return {"通話可能": [], "データ": []}, DEFAULT_LINKS, {}
 
 def save_data():
     """現在の在庫・リンクを保存"""
