@@ -329,17 +329,34 @@ async def cfg_select(callback: types.CallbackQuery):
     await callback.answer()
 
 
+# === 設定対象選択 ===
 @dp.callback_query(F.data.startswith("cfgsel_"))
 async def cfgsel_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     parts = callback.data.split("_")
-    mode = parts[1]
-    target = parts[2]
-    STATE[uid] = {"stage": f"config_{mode}", "target": target}
-    msg = "✏️ 新しい価格を入力してください。" if "price" in mode else "✏️ 新しいリンク(URL)を入力してください。"
-    await callback.message.answer(f"{msg}\n対象: {target}")
-    await callback.answer()
 
+    # parts 例:
+    # ["cfgsel", "price", "データ"]
+    # ["cfgsel", "discount", "price", "通話可能"]
+    # ["cfgsel", "link", "データ"]
+
+    # --- 割引設定かどうかを確認 ---
+    if parts[1] == "discount":
+        mode = f"discount_{parts[2]}"   # discount_price / discount_link
+        target = parts[3]
+    else:
+        mode = parts[1]                 # price / link
+        target = parts[2]
+
+    STATE[uid] = {"stage": f"config_{mode}", "target": target}
+
+    # --- メッセージ切り替え ---
+    if mode.endswith("price"):
+        await callback.message.answer(f"💴 新しい価格を入力してください。\n対象: {target}")
+    else:
+        await callback.message.answer(f"🔗 新しいリンク(URL)を入力してください。\n対象: {target}")
+
+    await callback.answer()
 
 # === 管理者の入力反映 ===
 @dp.message(F.text)
