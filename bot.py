@@ -345,30 +345,41 @@ async def cfgsel_type(callback: types.CallbackQuery):
 @dp.message(F.text)
 async def admin_config_edit(message: types.Message):
     uid = message.from_user.id
-    if not is_admin(uid): return
+    if not is_admin(uid):
+        return
     state = STATE.get(uid)
-    if not state or not state["stage"].startswith("config_"): return
+    if not state or not state["stage"].startswith("config_"):
+        return
 
     stage = state["stage"]
     target = state["target"]
     new_value = message.text.strip()
 
+    # mode 例: price / discount_price / link / discount_link
     mode = stage.replace("config_", "")
-    if "price" in mode:
+
+    # --- 価格関連 ---
+    if mode.endswith("price"):
         if not new_value.isdigit():
-            return await message.answer("⚠️ 数値のみ入力可能です。")
+            return await message.answer("⚠️ 数値のみ入力してください。")
         LINKS[target][mode] = int(new_value)
-        msg = f"💴 {target} の{ '割引価格' if 'discount' in mode else '価格' }を {new_value} 円に更新しました。"
-    else:
+        kind = "割引価格" if "discount" in mode else "通常価格"
+        msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
+
+    # --- リンク関連 ---
+    elif mode.endswith("link"):
         if not (new_value.startswith("http://") or new_value.startswith("https://")):
             return await message.answer("⚠️ URL形式で入力してください。")
         LINKS[target][mode] = new_value
-        msg = f"🔗 {target} の{ '割引リンク' if 'discount' in mode else 'リンク' }を更新しました。"
+        kind = "割引リンク" if "discount" in mode else "通常リンク"
+        msg = f"🔗 {target} の{kind}を更新しました。"
+
+    else:
+        return await message.answer("⚠️ 不明なモードです。")
 
     save_data()
     STATE.pop(uid, None)
     await message.answer(f"✅ {msg}")
-
 
 
 # === /help ===
