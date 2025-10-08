@@ -1,0 +1,17 @@
+{
+  "STOCK": {
+    "通話可能": [],
+    "データ": []
+  },
+  "LINKS": {
+    "通話可能": {
+      "url": "https://qr.paypay.ne.jp/p2p01_uMrph5YFDveRCFmw",
+      "price": 3000
+    },
+    "データ": {
+      "url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I",
+      "price": 1500
+    }
+  },
+  "CODES": {}
+}
