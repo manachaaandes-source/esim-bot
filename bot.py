@@ -96,26 +96,103 @@ async def start_cmd(message: types.Message):
     await message.answer("こんにちは！PayPay支払いBotです。\nどちらにしますか？\n\n" + stock_info, reply_markup=kb)
 
 
-# === 商品タイプ選択 ===
+# === 商品タイプ選択（割引コード対応版） ===
 @dp.callback_query(F.data.startswith("type_"))
 async def select_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     choice = callback.data.split("_")[1]
 
+    # 在庫確認
     if len(STOCK[choice]) == 0:
         await callback.message.answer(f"⚠️ 現在「{choice}」の在庫がありません。")
         await callback.answer()
         return
 
-    STATE[uid] = {"stage": "waiting_payment", "type": choice}
-    product = LINKS[choice]
+    # 状態セット
+    STATE[uid] = {"stage": "ask_code", "type": choice}
+
+    # 割引コード確認ボタン
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟️ はい（コードあり）", callback_data="has_code")],
+        [InlineKeyboardButton(text="🙅‍♂️ いいえ（持っていない）", callback_data="no_code")]
+    ])
 
     await callback.message.answer(
-        f"{choice}ですね。\nお支払い金額は {product['price']} 円です💰\n\n"
-        f"こちらのPayPayリンクからお支払いください👇\n{product['url']}\n\n"
-        "支払いが完了したら『完了』と送ってください。"
+        f"{choice}ですね。\n🪪 割引コードをお持ちですか？",
+        reply_markup=kb
     )
     await callback.answer()
+
+# === 「はい」→コード入力モード ===
+@dp.callback_query(F.data == "has_code")
+async def ask_code(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    state = STATE.get(uid)
+    if not state or state.get("stage") != "ask_code":
+        return
+    STATE[uid]["stage"] = "enter_code"
+    await callback.message.answer("🎟️ 割引コードを入力してください：")
+    await callback.answer()
+
+# === 「いいえ」→通常価格で支払い案内 ===
+@dp.callback_query(F.data == "no_code")
+async def no_code(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    state = STATE.get(uid)
+    if not state or state.get("stage") != "ask_code":
+        return
+    STATE[uid]["discount"] = False
+    await proceed_to_payment(callback.message, discount=False)
+    await callback.answer()
+
+
+# === 支払い案内（共通化） ===
+async def proceed_to_payment(message, discount=False):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+    choice = state["type"]
+    product = LINKS[choice]
+
+    if discount:
+        normal_price = product["price"]
+        price = product.get("discount_price", normal_price)
+        discount_info = f"💸 割引適用！通常 {normal_price}円 → 特別価格 {price}円 💰"
+    else:
+        price = product["price"]
+        discount_info = f"💴 お支払い金額は {price} 円です。"
+
+    STATE[uid] = {"stage": "waiting_payment", "type": choice}
+    await message.answer(
+        f"{choice}ですね。\n{discount_info}\n\n"
+        f"こちらのPayPayリンクからお支払いください👇\n"
+        f"{product['url']}\n\n"
+        "支払いが完了したら『完了』と送ってください。"
+    )
+
+# === コード入力された場合 ===
+@dp.message(F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
+async def check_code(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+    if not state or state.get("stage") != "enter_code":
+        return
+
+    code = message.text.strip().upper()
+    if code not in CODES:
+        return await message.answer("⚠️ 無効なコードです。")
+    if CODES[code]["used"]:
+        return await message.answer("⚠️ このコードはすでに使用されています。")
+
+    choice = state["type"]
+    if CODES[code]["type"] != choice:
+        return await message.answer("⚠️ このコードは別タイプ用です。")
+
+    # コード使用済みにして保存
+    CODES[code]["used"] = True
+    save_data()
+
+    await message.answer("🎉 コードが承認されました！割引価格が適用されます。")
+    await proceed_to_payment(message, discount=True)
 
 
 # === 支払い完了報告 ===
@@ -274,85 +351,6 @@ async def list_codes(message: types.Message):
         text += f"{k} | {v['type']} | {status}\n"
     await message.answer(text)
 
-
-# === 割引導線 ===
-@dp.callback_query(F.data.startswith("type_"))
-async def select_type(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    choice = callback.data.split("_")[1]
-
-    if len(STOCK[choice]) == 0:
-        await callback.message.answer(f"⚠️ 現在「{choice}」の在庫がありません。")
-        await callback.answer()
-        return
-
-    STATE[uid] = {"stage": "ask_code", "type": choice}
-    await callback.message.answer(
-        f"{choice}ですね。\n"
-        "🪪 割引コードをお持ちですか？\n"
-        "「はい」または「いいえ」を送信してください。"
-    )
-    await callback.answer()
-
-
-@dp.message(F.text.lower().in_(["はい", "ある", "yes"]))
-async def ask_code_value(message: types.Message):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-    if not state or state["stage"] != "ask_code":
-        return
-    await message.answer("🎟️ コードを入力してください：")
-    STATE[uid]["stage"] = "enter_code"
-
-
-@dp.message(F.text.lower().in_(["いいえ", "ない", "no"]))
-async def no_code(message: types.Message):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-    if not state or state["stage"] != "ask_code":
-        return
-    STATE[uid]["discount"] = False
-    await proceed_to_payment(message, discount=False)
-
-
-@dp.message(F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
-async def check_code(message: types.Message):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-    if not state or state["stage"] != "enter_code":
-        return
-
-    code = message.text.strip().upper()
-    if code not in CODES:
-        return await message.answer("⚠️ 無効なコードです。")
-    if CODES[code]["used"]:
-        return await message.answer("⚠️ すでに使用済みのコードです。")
-
-    choice = state["type"]
-    if CODES[code]["type"] != choice:
-        return await message.answer("⚠️ このコードは別タイプ用です。")
-
-    CODES[code]["used"] = True
-    save_data()
-    await message.answer("🎉 コードが承認されました！割引が適用されます。")
-    await proceed_to_payment(message, discount=True)
-
-
-# === 支払い案内（共通化） ===
-async def proceed_to_payment(message, discount=False):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-    choice = state["type"]
-    product = LINKS[choice]
-    price = product.get("discount_price", product['price']) if discount else product['price']
-
-    STATE[uid] = {"stage": "waiting_payment", "type": choice}
-    await message.answer(
-        f"{choice}ですね。\nお支払い金額は {price} 円です💰\n\n"
-        f"こちらのPayPayリンクからお支払いください👇\n{product['url']}\n\n"
-        "支払いが完了したら『完了』と送ってください。"
-    )
-
 # === /config ===
 @dp.message(Command("config"))
 async def config_menu(message: types.Message):
@@ -371,26 +369,64 @@ async def config_menu(message: types.Message):
 @dp.callback_query(F.data.startswith("cfg_"))
 async def cfg_select(callback: types.CallbackQuery):
     mode = callback.data.split("_")[1]
+
+    # 💸 割引設定が押された場合だけ特別メニューを出す
+    if mode == "discount":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💰 割引料金を設定", callback_data="cfgdisc_price")],
+            [InlineKeyboardButton(text="🔗 割引リンクを設定", callback_data="cfgdisc_link")]
+        ])
+        await callback.message.answer("💸 割引設定メニュー\nどちらを変更しますか？", reply_markup=kb)
+        await callback.answer()
+        return
+
+    # 通常設定（価格 or 通常リンク）
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💾 データ", callback_data=f"cfgsel_{mode}_データ")],
         [InlineKeyboardButton(text="📞 通話可能", callback_data=f"cfgsel_{mode}_通話可能")]
     ])
-    await callback.message.answer(
-        f"🛠 どちらのタイプの{'価格' if mode=='price' else 'リンク'}を変更しますか？",
-        reply_markup=kb
-    )
+    label = "価格" if mode == "price" else "リンク"
+    await callback.message.answer(f"🛠 どちらのタイプの{label}を変更しますか？", reply_markup=kb)
+    await callback.answer()
+
+
+# === 割引メニュー選択後 ===   ←💥 これをここに追加！
+@dp.callback_query(F.data.startswith("cfgdisc_"))
+async def cfgdisc_select(callback: types.CallbackQuery):
+    submode = callback.data.split("_")[1]  # price or link
+    uid = callback.from_user.id
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💾 データ", callback_data=f"cfgsel_discount_{submode}_データ")],
+        [InlineKeyboardButton(text="📞 通話可能", callback_data=f"cfgsel_discount_{submode}_通話可能")]
+    ])
+    label = "割引料金" if submode == "price" else "割引リンク"
+    await callback.message.answer(f"💸 {label}を変更するタイプを選んでください。", reply_markup=kb)
     await callback.answer()
 
 
 # === 設定対象選択 ===
 @dp.callback_query(F.data.startswith("cfgsel_"))
 async def cfgsel_type(callback: types.CallbackQuery):
-    _, mode, target = callback.data.split("_")
+    parts = callback.data.split("_")
     uid = callback.from_user.id
+
+    # 割引設定の場合
+    if parts[1] == "discount":
+        mode = f"discount_{parts[2]}"  # discount_price or discount_link
+        target = parts[3]
+    else:
+        mode = parts[1]  # price or link
+        target = parts[2]
+
     STATE[uid] = {"stage": f"config_{mode}", "target": target}
-    await callback.message.answer(
-        f"✏️ 新しい{'価格(数字)' if mode=='price' else '支払いリンク(URL)'}を入力してください。\n対象: {target}"
-    )
+
+    if mode.endswith("price"):
+        msg = f"✏️ 新しい価格(数字)を入力してください。\n対象: {target}"
+    else:
+        msg = f"✏️ 新しいリンク(URL)を入力してください。\n対象: {target}"
+
+    await callback.message.answer(msg)
     await callback.answer()
 
 
@@ -616,13 +652,21 @@ async def handle_text_message(message: types.Message):
             LINKS[target]["price"] = int(new_value)
             save_data()
             msg = f"💴 {target} の価格を {new_value} 円に更新しました。"
-
-        elif mode == "discount":
+            
+        elif mode == "discount_price":
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみを入力してください。")
             LINKS[target]["discount_price"] = int(new_value)
             save_data()
             msg = f"💸 {target} の割引価格を {new_value} 円に更新しました。"
+            
+        elif mode == "discount_link":
+            if not (new_value.startswith("http://") or new_value.startswith("https://")):
+                return await message.answer("⚠️ 有効なURLを入力してください。")
+            LINKS[target]["discount_url"] = new_value
+            save_data()
+            msg = f"🔗 {target} の割引リンクを更新しました。\n{new_value}"
+
 
         else:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
