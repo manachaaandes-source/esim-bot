@@ -25,7 +25,11 @@ def load_data():
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 print("💾 data.json を読み込みました。")
-                return data.get("STOCK", {"通話可能": [], "データ": []}), data.get("LINKS", DEFAULT_LINKS)
+                return (
+                    data.get("STOCK", {"通話可能": [], "データ": []}),
+                    data.get("LINKS", DEFAULT_LINKS),
+                    data.get("CODES", {})
+                )
         except Exception as e:
             print(f"⚠️ データ読み込み失敗: {e}")
     return {"通話可能": [], "データ": []}, DEFAULT_LINKS
@@ -35,7 +39,7 @@ def save_data():
     """現在の在庫・リンクを保存"""
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump({"STOCK": STOCK, "LINKS": LINKS}, f, ensure_ascii=False, indent=4)
+            json.dump({"STOCK": STOCK, "LINKS": LINKS, "CODES": CODES}, f, ensure_ascii=False, indent=4)
         print("💾 data.json に保存しました。")
     except Exception as e:
         print(f"⚠️ データ保存失敗: {e}")
@@ -53,7 +57,8 @@ DEFAULT_LINKS = {
 }
 
 # JSON から在庫とリンクを復元
-STOCK, LINKS = load_data()
+STOCK, LINKS, CODES = load_data()
+CODES = {}  # 追加（存在しない場合の初期化用）
 
 NOTICE = (
     "⚠️ ご注意\n"
@@ -236,6 +241,118 @@ async def handle_reason_reply(message: types.Message):
     STATE.pop(message.from_user.id, None)
     STATE.pop(target_id, None)
 
+import random, string
+
+# === コード発行 (/code) ===
+@dp.message(Command("code"))
+async def create_code(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限がありません。")
+
+    parts = message.text.split()
+    if len(parts) < 2 or parts[1] not in STOCK:
+        return await message.answer("使い方: /code 通話可能 または /code データ")
+
+    ctype = parts[1]
+    code = "RKTN-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    CODES[code] = {"used": False, "type": ctype}
+    save_data()
+    await message.answer(f"✅ コード発行完了！\n\n💬 コード: `{code}`\n📦 対象: {ctype}\n（1回のみ有効）", parse_mode="Markdown")
+
+
+# === コード一覧 (/codes) ===
+@dp.message(Command("codes"))
+async def list_codes(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限がありません。")
+
+    if not CODES:
+        return await message.answer("まだコードはありません。")
+
+    text = "🎟️ コード一覧\n\n"
+    for k, v in CODES.items():
+        status = "✅使用済み" if v["used"] else "🟢未使用"
+        text += f"{k} | {v['type']} | {status}\n"
+    await message.answer(text)
+
+
+# === 割引導線 ===
+@dp.callback_query(F.data.startswith("type_"))
+async def select_type(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    choice = callback.data.split("_")[1]
+
+    if len(STOCK[choice]) == 0:
+        await callback.message.answer(f"⚠️ 現在「{choice}」の在庫がありません。")
+        await callback.answer()
+        return
+
+    STATE[uid] = {"stage": "ask_code", "type": choice}
+    await callback.message.answer(
+        f"{choice}ですね。\n"
+        "🪪 割引コードをお持ちですか？\n"
+        "「はい」または「いいえ」を送信してください。"
+    )
+    await callback.answer()
+
+
+@dp.message(F.text.lower().in_(["はい", "ある", "yes"]))
+async def ask_code_value(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+    if not state or state["stage"] != "ask_code":
+        return
+    await message.answer("🎟️ コードを入力してください：")
+    STATE[uid]["stage"] = "enter_code"
+
+
+@dp.message(F.text.lower().in_(["いいえ", "ない", "no"]))
+async def no_code(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+    if not state or state["stage"] != "ask_code":
+        return
+    STATE[uid]["discount"] = False
+    await proceed_to_payment(message, discount=False)
+
+
+@dp.message(F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
+async def check_code(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+    if not state or state["stage"] != "enter_code":
+        return
+
+    code = message.text.strip().upper()
+    if code not in CODES:
+        return await message.answer("⚠️ 無効なコードです。")
+    if CODES[code]["used"]:
+        return await message.answer("⚠️ すでに使用済みのコードです。")
+
+    choice = state["type"]
+    if CODES[code]["type"] != choice:
+        return await message.answer("⚠️ このコードは別タイプ用です。")
+
+    CODES[code]["used"] = True
+    save_data()
+    await message.answer("🎉 コードが承認されました！割引が適用されます。")
+    await proceed_to_payment(message, discount=True)
+
+
+# === 支払い案内（共通化） ===
+async def proceed_to_payment(message, discount=False):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+    choice = state["type"]
+    product = LINKS[choice]
+    price = product.get("discount_price", product['price']) if discount else product['price']
+
+    STATE[uid] = {"stage": "waiting_payment", "type": choice}
+    await message.answer(
+        f"{choice}ですね。\nお支払い金額は {price} 円です💰\n\n"
+        f"こちらのPayPayリンクからお支払いください👇\n{product['url']}\n\n"
+        "支払いが完了したら『完了』と送ってください。"
+    )
 
 # === /config ===
 @dp.message(Command("config"))
@@ -245,6 +362,7 @@ async def config_menu(message: types.Message):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💴 価格を変更", callback_data="cfg_price")],
+        [InlineKeyboardButton(text="💸 割引価格を変更", callback_data="cfg_discount")],
         [InlineKeyboardButton(text="🔗 支払いリンクを変更", callback_data="cfg_link")]
     ])
     await message.answer("⚙️ 設定メニュー\nどの設定を変更しますか？", reply_markup=kb)
@@ -499,6 +617,14 @@ async def handle_text_message(message: types.Message):
             LINKS[target]["price"] = int(new_value)
             save_data()
             msg = f"💴 {target} の価格を {new_value} 円に更新しました。"
+
+        elif mode == "discount":
+            if not new_value.isdigit():
+                return await message.answer("⚠️ 数値のみを入力してください。")
+            LINKS[target]["discount_price"] = int(new_value)
+            save_data()
+            msg = f"💸 {target} の割引価格を {new_value} 円に更新しました。"
+
         else:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ 有効なURLを入力してください。")
@@ -510,12 +636,9 @@ async def handle_text_message(message: types.Message):
         with open("config.json", "w", encoding="utf-8") as f:
             json.dump(CONFIG, f, ensure_ascii=False, indent=4)
 
-        STATE.pop(uid, None)
-        await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
-        return
-
-    # その他メッセージは無視
-    return
+            STATE.pop(uid, None)
+            await message.answer(f"✅ {msg}\n\n変更内容は即時反映されます。")
+            return
 
 # === 起動 ===
 async def main():
