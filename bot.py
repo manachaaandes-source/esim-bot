@@ -335,18 +335,23 @@ async def cfgsel_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     parts = callback.data.split("_")
 
-    # parts 例:
-    # ["cfgsel", "price", "データ"]
-    # ["cfgsel", "discount", "price", "通話可能"]
-    # ["cfgsel", "link", "データ"]
+    # 安全チェック
+    if len(parts) < 3:
+        await callback.message.answer("⚠️ 無効な設定データを受信しました。")
+        await callback.answer()
+        return
 
     # --- 割引設定かどうかを確認 ---
-    if parts[1] == "discount":
+    if parts[1] == "discount" and len(parts) >= 4:
         mode = f"discount_{parts[2]}"   # discount_price / discount_link
         target = parts[3]
-    else:
+    elif len(parts) == 3:
         mode = parts[1]                 # price / link
         target = parts[2]
+    else:
+        await callback.message.answer("⚠️ 無効な形式のコマンドです。")
+        await callback.answer()
+        return
 
     STATE[uid] = {"stage": f"config_{mode}", "target": target}
 
