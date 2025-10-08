@@ -315,53 +315,60 @@ async def config_menu(message: types.Message):
     await message.answer("⚙️ どの設定を変更しますか？", reply_markup=kb)
 
 
+# === 設定カテゴリ選択 ===
 @dp.callback_query(F.data.startswith("cfg_"))
 async def cfg_select(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    mode = callback.data.split("_")[1]
+    mode = callback.data.split("_", 1)[1]  # ← discount_price, discount_link もそのまま取る
+
+    # 種類に応じてラベルを変える
+    if "link" in mode:
+        label = "URL"
+    elif "price" in mode:
+        label = "価格"
+    else:
+        label = "設定"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💾 データ", callback_data=f"cfgsel_{mode}_データ")],
         [InlineKeyboardButton(text="📞 通話可能", callback_data=f"cfgsel_{mode}_通話可能")]
     ])
-    label = "リンク" if "link" in mode else "価格"
     await callback.message.answer(f"🛠 どちらの{label}を変更しますか？", reply_markup=kb)
     await callback.answer()
 
 
-# === 設定対象選択 ===
+# === 設定対象（データ or 通話可能）選択 ===
 @dp.callback_query(F.data.startswith("cfgsel_"))
 async def cfgsel_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     parts = callback.data.split("_")
 
-    # 安全チェック
+    # ["cfgsel", "discount", "price", "データ"] or ["cfgsel", "price", "データ"]
     if len(parts) < 3:
         await callback.message.answer("⚠️ 無効な設定データを受信しました。")
         await callback.answer()
         return
 
-    # --- 割引設定かどうかを確認 ---
+    # モードと対象抽出
     if parts[1] == "discount" and len(parts) >= 4:
-        mode = f"discount_{parts[2]}"   # discount_price / discount_link
+        mode = f"discount_{parts[2]}"
         target = parts[3]
-    elif len(parts) == 3:
-        mode = parts[1]                 # price / link
-        target = parts[2]
     else:
-        await callback.message.answer("⚠️ 無効な形式のコマンドです。")
-        await callback.answer()
-        return
+        mode = parts[1]
+        target = parts[2]
 
     STATE[uid] = {"stage": f"config_{mode}", "target": target}
 
-    # --- メッセージ切り替え ---
-    if mode.endswith("price"):
+    # 入力促しメッセージ
+    if "price" in mode:
         await callback.message.answer(f"💴 新しい価格を入力してください。\n対象: {target}")
-    else:
+    elif "link" in mode:
         await callback.message.answer(f"🔗 新しいリンク(URL)を入力してください。\n対象: {target}")
+    else:
+        await callback.message.answer("⚠️ 不明な設定モードです。")
 
     await callback.answer()
+
 
 # === 管理者の入力反映 ===
 @dp.message(F.text)
@@ -378,27 +385,24 @@ async def admin_config_edit(message: types.Message):
     target = state["target"]
     new_value = message.text.strip()
 
-    # mode 例: price / discount_price / link / discount_link
-    mode = stage.replace("config_", "")
+    mode = stage.replace("config_", "")  # price / discount_price / link / discount_link
 
     # --- 価格関連 ---
-    if mode.endswith("price"):
+    if "price" in mode:
         if not new_value.isdigit():
             return await message.answer("⚠️ 数値のみ入力してください。")
 
         LINKS.setdefault(target, {})
-        LINKS[target].setdefault(mode, None)
         LINKS[target][mode] = int(new_value)
         kind = "割引価格" if "discount" in mode else "通常価格"
         msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
     # --- リンク関連 ---
-    elif mode.endswith("link"):
+    elif "link" in mode:
         if not (new_value.startswith("http://") or new_value.startswith("https://")):
             return await message.answer("⚠️ URL形式で入力してください。")
 
         LINKS.setdefault(target, {})
-        LINKS[target].setdefault(mode, None)
         LINKS[target][mode] = new_value
         kind = "割引リンク" if "discount" in mode else "通常リンク"
         msg = f"🔗 {target} の{kind}を更新しました。"
@@ -406,7 +410,6 @@ async def admin_config_edit(message: types.Message):
     else:
         return await message.answer("⚠️ 不明なモードです。")
 
-    # --- 保存＆状態クリア ---
     save_data()
     STATE.pop(uid, None)
     await message.answer(f"✅ {msg}")
