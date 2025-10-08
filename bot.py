@@ -3,10 +3,42 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 import json
+import os
 
 # === 基本設定 ===
 with open("config.json", "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
+
+DATA_FILE = "data.json"
+
+# ✅ デフォルトリンク（これを先に置く）
+DEFAULT_LINKS = {
+    "通話可能": {"url": "https://qr.paypay.ne.jp/p2p01_uMrph5YFDveRCFmw", "price": 3000},
+    "データ": {"url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I", "price": 1500},
+}
+
+# === データ保存・読み込み関数 ===
+def load_data():
+    """起動時に保存データを読み込む"""
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                print("💾 data.json を読み込みました。")
+                return data.get("STOCK", {"通話可能": [], "データ": []}), data.get("LINKS", DEFAULT_LINKS)
+        except Exception as e:
+            print(f"⚠️ データ読み込み失敗: {e}")
+    return {"通話可能": [], "データ": []}, DEFAULT_LINKS
+
+
+def save_data():
+    """現在の在庫・リンクを保存"""
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"STOCK": STOCK, "LINKS": LINKS}, f, ensure_ascii=False, indent=4)
+        print("💾 data.json に保存しました。")
+    except Exception as e:
+        print(f"⚠️ データ保存失敗: {e}")
 
 bot = Bot(token=CONFIG["TELEGRAM_TOKEN"])
 dp = Dispatcher()
@@ -15,10 +47,13 @@ ADMIN_ID = 5397061486  # あなたのTelegram ID
 STATE = {}
 STOCK = {"通話可能": [], "データ": []}
 
-LINKS = {
+DEFAULT_LINKS = {
     "通話可能": {"url": "https://qr.paypay.ne.jp/p2p01_uMrph5YFDveRCFmw", "price": 3000},
     "データ": {"url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I", "price": 1500},
 }
+
+# JSON から在庫とリンクを復元
+STOCK, LINKS = load_data()
 
 NOTICE = (
     "⚠️ ご注意\n"
@@ -107,6 +142,7 @@ async def handle_payment_photo(message: types.Message):
         choice = state["type"]
         file_id = message.photo[-1].file_id
         STOCK[choice].append(file_id)
+        save_data()
         await message.answer(f"✅ {choice} に在庫を追加しました。現在 {len(STOCK[choice])}枚")
         STATE.pop(uid, None)
         return
@@ -159,6 +195,7 @@ async def confirm_send(callback: types.CallbackQuery):
         return await callback.answer("❌ 在庫なし。", show_alert=True)
 
     file_id = STOCK[choice].pop(0)
+    save_data()
     await bot.send_photo(target_id, file_id, caption=f"✅ {choice} を送信しました。ありがとうございました！")
     await bot.send_message(target_id, NOTICE)
     await callback.message.edit_caption(f"✅ {choice} 送信済み。残り在庫: {len(STOCK[choice])}枚")
@@ -460,11 +497,13 @@ async def handle_text_message(message: types.Message):
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみを入力してください。")
             LINKS[target]["price"] = int(new_value)
+            save_data()
             msg = f"💴 {target} の価格を {new_value} 円に更新しました。"
         else:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ 有効なURLを入力してください。")
             LINKS[target]["url"] = new_value
+            save_data()
             msg = f"🔗 {target} のリンクを更新しました。\n{new_value}"
 
         CONFIG["LINKS"] = LINKS
