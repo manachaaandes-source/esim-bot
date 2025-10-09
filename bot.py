@@ -79,7 +79,8 @@ async def start_cmd(message: types.Message):
         "🧭 コマンド一覧\n\n"
         "【ユーザー向け】\n"
         "/start - 購入メニューを開く\n"
-        "/保証 - 保証申請を行う\n\n"
+        "/保証 - 保証申請を行う\n"
+        "/問い合わせ - 管理者に直接メッセージを送る\n\n"
         "【管理者専用】\n"
         "/addstock 通話可能|データ - 在庫を追加\n"
         "/stock - 在庫確認\n"
@@ -150,14 +151,18 @@ async def check_code(message: types.Message):
     if CODES[code]["type"] != choice:
         return await message.answer("⚠️ このコードは別タイプ用です。")
 
-    # コード承認 → 使用済み保存
+    # コード承認
     CODES[code]["used"] = True
     save_data()
 
-    # 割引価格を取得して再送
+    # 割引価格・リンクを反映
     product = LINKS.get(choice, DEFAULT_LINKS[choice])
-    price = product.get("discount_price", product["price"])
-    link = product.get("discount_url", product["url"])
+    price = product.get("discount_price") or product.get("price")
+    link = product.get("discount_link") or product.get("url")
+
+    # 状態保存（支払い確認に渡す）
+    STATE[uid]["discount_code"] = code
+    STATE[uid]["discount_price"] = price
 
     await message.answer("🎉 割引コードが承認されました！特別価格が適用されます✨")
     await message.answer(
@@ -168,24 +173,12 @@ async def check_code(message: types.Message):
     )
 
 
-# === 支払い完了報告 ===
-@dp.message(F.text.lower().contains("完了"))
-async def handle_done(message: types.Message):
-    uid = message.from_user.id
-    state = STATE.get(uid)
-    if not state or state["stage"] != "waiting_payment":
-        return await message.answer("⚠️ まず /start から始めてください。")
-    STATE[uid]["stage"] = "waiting_screenshot"
-    await message.answer("💴 支払い完了ありがとうございます。\nスクリーンショットを送ってください。")
-
-
-# === 支払いスクショ ===
+# === 支払いスクショ（管理者送信改良版） ===
 @dp.message(F.photo)
 async def handle_payment_photo(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
 
-    # 在庫追加中
     if state and state.get("stage") == "adding_stock":
         choice = state["type"]
         STOCK[choice].append(message.photo[-1].file_id)
@@ -198,7 +191,20 @@ async def handle_payment_photo(message: types.Message):
         return
 
     choice = state["type"]
-    price = LINKS[choice]["price"]
+    # 割引使用時はそちらを優先表示
+    price = state.get("discount_price") or LINKS[choice]["price"]
+    discount_code = state.get("discount_code")
+
+    caption = (
+        f"📩 支払い確認\n"
+        f"👤 {message.from_user.full_name}\n"
+        f"🆔 {uid}\n"
+        f"📦 {choice}\n"
+        f"💴 {price}円"
+    )
+    if discount_code:
+        caption += f"\n🎟️ 割引コード: {discount_code}"
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ 承認", callback_data=f"confirm_{uid}"),
          InlineKeyboardButton(text="❌ 拒否", callback_data=f"deny_{uid}")]
@@ -206,7 +212,7 @@ async def handle_payment_photo(message: types.Message):
 
     await bot.send_photo(
         ADMIN_ID, message.photo[-1].file_id,
-        caption=f"📩 支払い確認\n👤 {message.from_user.full_name}\n🆔 {uid}\n📦 {choice}\n💴 {price}円",
+        caption=caption,
         reply_markup=kb
     )
     await message.answer("🕐 管理者確認中です。")
@@ -423,6 +429,22 @@ async def help_cmd(message: types.Message):
         "【管理者】\n/addstock 通話可能|データ\n/stock\n/code\n/codes\n/config\n/help"
     )
 
+# === /問い合わせ ===
+@dp.message(Command("問い合わせ"))
+async def inquiry_start(message: types.Message):
+    STATE[message.from_user.id] = {"stage": "inquiry_waiting"}
+    await message.answer("💬 お問い合わせ内容を入力してください。\n（送信後、管理者に転送されます）")
+
+@dp.message(F.text)
+async def inquiry_message(message: types.Message):
+    state = STATE.get(message.from_user.id)
+    if state and state.get("stage") == "inquiry_waiting":
+        await bot.send_message(
+            ADMIN_ID,
+            f"📩 新しいお問い合わせ\n👤 {message.from_user.full_name}\n🆔 {message.from_user.id}\n\n📝 内容:\n{message.text}"
+        )
+        await message.answer("✅ お問い合わせを送信しました。返信までお待ちください。")
+        STATE.pop(message.from_user.id, None)
 
 # === 起動 ===
 async def main():
