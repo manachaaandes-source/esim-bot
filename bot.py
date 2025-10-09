@@ -130,8 +130,30 @@ async def select_type(callback: types.CallbackQuery):
         "※持っていない場合は無視して『完了』と送ってください。"
     )
 
-    await callback.answer()
+# === 支払い完了報告 ===
+@dp.message(F.text.lower().contains("完了"))
+async def handle_done(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
 
+    # 状態確認
+    if not state or state.get("stage") not in ["waiting_payment"]:
+        return await message.answer("⚠️ まず /start から始めてください。")
+
+    # ステージをスクショ待ちに変更
+    STATE[uid]["stage"] = "waiting_screenshot"
+
+    # 割引情報がある場合は表示を変更
+    discount_price = state.get("discount_price")
+    if discount_price:
+        price_text = f"（割引価格 {discount_price}円）"
+    else:
+        price_text = ""
+
+    await message.answer(
+        f"💴 支払い完了ありがとうございます{price_text}。\n"
+        "スクリーンショットを送ってください。"
+    )
 
 # === 割引コード認証 ===
 @dp.message(F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
@@ -435,16 +457,60 @@ async def inquiry_start(message: types.Message):
     STATE[message.from_user.id] = {"stage": "inquiry_waiting"}
     await message.answer("💬 お問い合わせ内容を入力してください。\n（送信後、管理者に転送されます）")
 
+# === 問い合わせ内容送信 / 管理者設定処理 統合ハンドラ ===
 @dp.message(F.text)
-async def inquiry_message(message: types.Message):
-    state = STATE.get(message.from_user.id)
+async def handle_text_message(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+
+    # 📨 ユーザー問い合わせ優先
     if state and state.get("stage") == "inquiry_waiting":
         await bot.send_message(
             ADMIN_ID,
-            f"📩 新しいお問い合わせ\n👤 {message.from_user.full_name}\n🆔 {message.from_user.id}\n\n📝 内容:\n{message.text}"
+            f"📩 新しいお問い合わせ\n"
+            f"👤 {message.from_user.full_name}\n"
+            f"🆔 {uid}\n\n"
+            f"📝 内容:\n{message.text}"
         )
         await message.answer("✅ お問い合わせを送信しました。返信までお待ちください。")
-        STATE.pop(message.from_user.id, None)
+        STATE.pop(uid, None)
+        return
+
+    # 🧑‍💻 管理者設定中の場合のみ処理
+    if not is_admin(uid):
+        return
+    if not state or not state["stage"].startswith("config_"):
+        return
+
+    stage = state["stage"]
+    target = state["target"]
+    new_value = message.text.strip()
+    mode = stage.replace("config_", "")
+
+    # --- 価格設定 ---
+    if "price" in mode:
+        if not new_value.isdigit():
+            return await message.answer("⚠️ 数値のみ入力してください。")
+        LINKS.setdefault(target, {})
+        LINKS[target][mode] = int(new_value)
+        kind = "割引価格" if "discount" in mode else "通常価格"
+        msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
+
+    # --- リンク設定 ---
+    elif "link" in mode:
+        if not (new_value.startswith("http://") or new_value.startswith("https://")):
+            return await message.answer("⚠️ URL形式で入力してください。")
+        LINKS.setdefault(target, {})
+        LINKS[target][mode] = new_value
+        kind = "割引リンク" if "discount" in mode else "通常リンク"
+        msg = f"🔗 {target} の{kind}を更新しました。"
+
+    else:
+        return await message.answer("⚠️ 不明なモードです。")
+
+    save_data()
+    STATE.pop(uid, None)
+    await message.answer(f"✅ {msg}")
 
 # === 起動 ===
 async def main():
