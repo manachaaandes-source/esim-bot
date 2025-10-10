@@ -37,6 +37,7 @@ def ensure_data_file():
         return json.load(f)
 
 def load_data():
+    global STOCK, LINKS, CODES
     try:
         if not os.path.exists(DATA_FILE):
             return ensure_data_file()
@@ -661,6 +662,7 @@ async def handle_text_message(message: types.Message):
         target = state["target"]
         new_value = text
 
+        global LINKS
         if "price" in stage:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
