@@ -265,6 +265,7 @@ async def handle_payment_photo(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
 
+    # --- 在庫追加時 ---
     if state and state.get("stage") == "adding_stock":
         choice = state["type"]
         STOCK[choice].append(message.photo[-1].file_id)
@@ -273,12 +274,13 @@ async def handle_payment_photo(message: types.Message):
         STATE.pop(uid, None)
         return
 
+    # --- 支払い確認時 ---
     if not state or state.get("stage") != "waiting_screenshot":
         return
 
     choice = state["type"]
-    # 割引使用時はそちらを優先表示
-    price = state.get("discount_price") or LINKS[choice]["price"]
+    count = state.get("count", 1)
+    price = state.get("final_price") or state.get("discount_price") or (LINKS[choice]["price"] * count)
     discount_code = state.get("discount_code")
 
     caption = (
@@ -286,14 +288,17 @@ async def handle_payment_photo(message: types.Message):
         f"👤 {message.from_user.full_name}\n"
         f"🆔 {uid}\n"
         f"📦 {choice}\n"
-        f"💴 {price}円"
+        f"🧾 枚数: {count}\n"
+        f"💴 支払金額: {price}円"
     )
     if discount_code:
         caption += f"\n🎟️ 割引コード: {discount_code}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ 承認", callback_data=f"confirm_{uid}"),
-         InlineKeyboardButton(text="❌ 拒否", callback_data=f"deny_{uid}")]
+        [
+            InlineKeyboardButton(text="✅ 承認", callback_data=f"confirm_{uid}"),
+            InlineKeyboardButton(text="❌ 拒否", callback_data=f"deny_{uid}")
+        ]
     ])
 
     await bot.send_photo(
@@ -639,37 +644,34 @@ async def handle_text_message(message: types.Message):
         STATE.pop(uid, None)
         return
 
-    # 👑 管理者設定（価格/リンク）モード中の場合
+    # 👑 管理者設定モード（価格/リンク変更）
     if is_admin(uid) and state and state["stage"].startswith("config_"):
         stage = state["stage"]
         target = state["target"]
-        new_value = message.text.strip()
-        mode = stage.replace("config_", "")
-
-        LINKS.setdefault(target, {})
+        new_value = text
 
         # --- 価格設定 ---
-        if "price" in mode:
+        if "price" in stage:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
-            value = int(new_value)
 
-            # 🔧 modeが"discount_price"か"price"か判定して正しいキーに保存
-            if "discount" in mode:
-                LINKS[target]["discount_price"] = value
+            LINKS.setdefault(target, {})
+            if "discount" in stage:
+                LINKS[target]["discount_price"] = int(new_value)
                 kind = "割引価格"
             else:
-                LINKS[target]["price"] = value
+                LINKS[target]["price"] = int(new_value)
                 kind = "通常価格"
 
-            msg = f"💴 {target} の{kind}を {value} 円に更新しました。"
+            msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
         # --- リンク設定 ---
-        elif "link" in mode:
+        elif "link" in stage:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ URL形式で入力してください。")
 
-            if "discount" in mode:
+            LINKS.setdefault(target, {})
+            if "discount" in stage:
                 LINKS[target]["discount_link"] = new_value
                 kind = "割引リンク"
             else:
@@ -684,7 +686,7 @@ async def handle_text_message(message: types.Message):
         save_data()
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
-        print(f"✅ {target} の {kind} 更新完了: {new_value}")
+        print(f"[CONFIG] {target} {kind} -> {new_value}")
         return
 
 # === 起動 ===
