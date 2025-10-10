@@ -24,6 +24,11 @@ DEFAULT_LINKS = {
     "データ": {"url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I", "price": 1500},
 }
 
+# === 固定価格設定 ===
+FIXED_PRICES = {
+    "データ": {"normal": 1500, "discount": 1250},
+    "通話可能": {"normal": 3000, "discount": 2500}
+}
 
 def ensure_data_file():
     """data.jsonがない場合自動生成"""
@@ -129,7 +134,7 @@ async def select_type(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-# === 枚数入力 ===
+# --- 枚数入力 ---
 @dp.message(F.text.regexp(r"^\d+$"))
 async def handle_count_input(message: types.Message):
     uid = message.from_user.id
@@ -145,55 +150,48 @@ async def handle_count_input(message: types.Message):
     if count > len(STOCK[choice]):
         return await message.answer(f"⚠️ 在庫不足です（最大 {len(STOCK[choice])} 枚まで）。")
 
-    product = LINKS.get(choice, DEFAULT_LINKS[choice])
-    base_price = product["price"]
+    # --- 基本価格 ---
+    base_price = FIXED_PRICES[choice]["normal"]
 
-    # --- まとめ買い割引ルール ---
-    if count >= 10:
-        discount_type = "10%"
+    # --- まとめ買い割引 ---
+    discount_rate = 0
+    if 10 <= count:
         discount_rate = 0.10
-    elif 5 <= count < 10:
-        discount_type = "5%"
+        discount_type = "10%"
+    elif 6 <= count <= 9:
         discount_rate = 0.05
+        discount_type = "5%"
     else:
         discount_type = None
-        discount_rate = 0.0
 
-    total_price = base_price * count
-    discounted_price = int(total_price * (1 - discount_rate))
+    total_price = int(base_price * count * (1 - discount_rate))
 
-    # ステート保存
     STATE[uid] = {
         "stage": "waiting_payment",
         "type": choice,
         "count": count,
+        "final_price": total_price,
         "discount_rate": discount_rate,
-        "final_price": discounted_price,
         "discount_type": discount_type
     }
 
-    # --- 案内メッセージ生成 ---
-    msg = f"🧾 {choice} を {count} 枚購入ですね。\n合計金額は {total_price} 円です💰"
+    msg = f"🧾 {choice} を {count} 枚購入ですね。\n合計金額は {total_price:,} 円です💰"
 
-    if discount_type:
-        # まとめ買い割引時
-        msg += f"\n🎉 まとめ買い割引（{discount_type}OFF）適用後: {discounted_price} 円✨"
-    else:
-        # 割引コード使用案内
+    if not discount_type:
         msg += (
-            "\n💬 割引コードをお持ちの場合は、今ここで入力できます。\n"
-            "（例：RKTN-ABC123）\n"
-            "⚠️ 割引コードは1枚分のみ反映されます。複数枚購入時も1枚分だけ割引されます。"
+            "\n🎟️ 割引コードをお持ちの場合は今入力できます。\n"
+            "⚠️ 2〜5枚の購入時は1枚分のみ割引価格（1250/2500円）になります。"
         )
+    else:
+        msg += f"\n🎉 まとめ買い割引（{discount_type}OFF）が適用されました。"
 
+    product = LINKS.get(choice, DEFAULT_LINKS[choice])
     msg += (
-        f"\n\nこちらのPayPayリンクからお支払いください👇\n"
-        f"{product['url']}\n\n"
-        "支払い完了後に『完了』と送ってください。"
+        f"\n\nこちらのPayPayリンク👇\n{product['url']}\n\n"
+        "支払い後に『完了』と送ってください。"
     )
 
     await message.answer(msg)
-
 
 # === 支払い完了報告 ===
 @dp.message(F.text.lower().contains("完了"))
@@ -227,10 +225,6 @@ async def check_code(message: types.Message):
     if not state or state.get("stage") != "waiting_payment":
         return
 
-    # まとめ買い割引がある場合は無効
-    if state.get("discount_rate", 0) > 0:
-        return await message.answer("⚠️ この注文にはまとめ買い割引がすでに適用されています。")
-
     code = message.text.strip().upper()
     if code not in CODES:
         return await message.answer("⚠️ 無効なコードです。")
@@ -242,31 +236,31 @@ async def check_code(message: types.Message):
     if CODES[code]["type"] != choice:
         return await message.answer("⚠️ このコードは別タイプ用です。")
 
-    # コード承認
+    # --- 割引価格ロジック ---
+    base_price = FIXED_PRICES[choice]["normal"]
+    discount_price = FIXED_PRICES[choice]["discount"]
+
+    if count == 1:
+        total_price = discount_price
+    elif 2 <= count <= 5:
+        total_price = discount_price + base_price * (count - 1)
+    else:
+        total_price = base_price * count  # 6枚以上はまとめ買い割引優先
+
+    # コード消費
     CODES[code]["used"] = True
     save_data()
-
-    product = LINKS.get(choice, DEFAULT_LINKS[choice])
-    base_price = product["price"]
-
-    # --- 割引ロジック ---
-    if count == 1:
-        total_price = base_price - 100  # 単品少額割引（任意）
-    elif 2 <= count <= 5:
-        total_price = (base_price * count) - base_price  # 1枚分だけ無料
-    else:
-        total_price = base_price * count  # 6枚以上は割引コード無効
 
     STATE[uid]["discount_code"] = code
     STATE[uid]["final_price"] = total_price
 
     await message.answer(
         f"🎉 割引コードが承認されました！\n"
-        f"⚠️ この割引コードは1枚分のみ適用されます。\n\n"
-        f"💸 割引後の支払い金額は {total_price} 円です。\n\n"
-        f"こちらのPayPayリンクからお支払いください👇\n"
-        f"{product.get('discount_link', product['url'])}\n\n"
-        "支払い完了後に『完了』と送ってください。"
+        f"⚠️ 2〜5枚購入時は1枚分のみ割引適用です。\n\n"
+        f"💸 支払金額: {total_price:,}円\n"
+        f"💴 割引価格: {discount_price}円（1枚目のみ）\n\n"
+        f"こちらのリンク👇\n{LINKS[choice]['discount_link']}\n\n"
+        "支払い後に『完了』と送ってください。"
     )
 
 # === 支払いスクショ（管理者送信改良版） ===
@@ -343,6 +337,15 @@ async def confirm_send(callback: types.CallbackQuery):
     for i in range(count):
         file_id = STOCK[choice].pop(0)
         await bot.send_photo(target_id, file_id, caption=f"✅ {choice} #{i+1}/{count} を送信しました！")
+
+        await log_purchase(
+            target_id,
+            callback.from_user.full_name,
+            choice,
+            state.get("count", 1),
+            state.get("final_price") or LINKS[choice]["price"],
+            state.get("discount_code")
+        )
 
     save_data()
     await bot.send_message(target_id, NOTICE)
@@ -595,6 +598,62 @@ async def status_cmd(message: types.Message):
     )
     await message.answer(info)
 
+# === /stats ===
+@dp.message(Command("stats"))
+async def stats_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    total_sales = 0
+    total_codes_used = sum(1 for v in CODES.values() if v["used"])
+    total_stock = sum(len(v) for v in STOCK.values())
+
+    # 売上合計計算
+    for t, data in LINKS.items():
+        price = data.get("price", 0)
+        total_items = len(DEFAULT_LINKS[t]["url"]) if t in DEFAULT_LINKS else 0
+        sold_count = max(0, total_items - len(STOCK[t]))
+        total_sales += sold_count * price
+
+    text = (
+        f"📊 **販売統計レポート**\n\n"
+        f"💴 推定総売上: {total_sales:,}円\n"
+        f"🎟️ 使用済み割引コード: {total_codes_used}件\n"
+        f"📦 在庫残数:\n"
+        f"　📞 通話可能: {len(STOCK['通話可能'])}枚\n"
+        f"　💾 データ: {len(STOCK['データ'])}枚\n"
+    )
+    await message.answer(text, parse_mode="Markdown")
+
+
+# === /history ===
+PURCHASE_LOG = []
+
+async def log_purchase(uid, username, choice, count, price, code=None):
+    PURCHASE_LOG.append({
+        "uid": uid,
+        "name": username,
+        "type": choice,
+        "count": count,
+        "price": price,
+        "code": code,
+    })
+
+@dp.message(Command("history"))
+async def show_history(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    if not PURCHASE_LOG:
+        return await message.answer("📄 購入履歴はまだありません。")
+
+    lines = [
+        f"👤 {p['name']} ({p['uid']})\n📦 {p['type']} x{p['count']}枚 | 💴 {p['price']}円"
+        + (f" | 🎟️ {p['code']}" if p['code'] else "")
+        for p in PURCHASE_LOG[-10:]
+    ]
+    await message.answer("🧾 **直近の購入履歴（最大10件）**\n\n" + "\n\n".join(lines), parse_mode="Markdown")
+
 # === /help ===
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
@@ -618,6 +677,8 @@ async def help_cmd(message: types.Message):
             "/status - Botの稼働状況を表示\n"
             "/broadcast メッセージ - 全ユーザーに通知\n"
             "/help - この一覧を表示\n"
+            "/stats - 売上統計を表示\n"
+            "/history - 購入履歴を表示\n"
         )
     else:
         # 👤 一般ユーザー向け
