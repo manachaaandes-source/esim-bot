@@ -639,44 +639,52 @@ async def handle_text_message(message: types.Message):
         STATE.pop(uid, None)
         return
 
-    # 👑 管理者設定（価格/リンク）
+    # 👑 管理者設定（価格/リンク）モード中の場合
     if is_admin(uid) and state and state["stage"].startswith("config_"):
         stage = state["stage"]
         target = state["target"]
-        new_value = text
+        new_value = message.text.strip()
         mode = stage.replace("config_", "")
+
+        LINKS.setdefault(target, {})
 
         # --- 価格設定 ---
         if "price" in mode:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
-            LINKS.setdefault(target, {})
-            LINKS[target][mode] = int(new_value)
-            kind = "割引価格" if "discount" in mode else "通常価格"
-            msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
+            value = int(new_value)
+
+            # 🔧 modeが"discount_price"か"price"か判定して正しいキーに保存
+            if "discount" in mode:
+                LINKS[target]["discount_price"] = value
+                kind = "割引価格"
+            else:
+                LINKS[target]["price"] = value
+                kind = "通常価格"
+
+            msg = f"💴 {target} の{kind}を {value} 円に更新しました。"
 
         # --- リンク設定 ---
         elif "link" in mode:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ URL形式で入力してください。")
-            LINKS.setdefault(target, {})
+
             if "discount" in mode:
                 LINKS[target]["discount_link"] = new_value
                 kind = "割引リンク"
             else:
                 LINKS[target]["url"] = new_value
                 kind = "通常リンク"
+
             msg = f"🔗 {target} の{kind}を更新しました。"
 
-        # --- 不明なモード ---
         else:
             return await message.answer("⚠️ 不明なモードです。")
 
-        # ✅ 共通処理：保存＋返信
         save_data()
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
-        print(f"✅ {target} の {mode} 更新完了 ({new_value})")
+        print(f"✅ {target} の {kind} 更新完了: {new_value}")
         return
 
 # === 起動 ===
