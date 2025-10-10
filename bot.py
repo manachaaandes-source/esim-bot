@@ -668,14 +668,16 @@ async def handle_text_message(message: types.Message):
                 return await message.answer("⚠️ 数値のみ入力してください。")
 
             LINKS.setdefault(target, {})
+            updated_link = dict(LINKS[target])
             if "discount" in stage:
-                LINKS[target]["discount_price"] = int(new_value)
+                updated_link["discount_price"] = int(new_value)
                 kind = "割引価格"
             else:
-                LINKS[target]["price"] = int(new_value)
+                updated_link["price"] = int(new_value)
                 kind = "通常価格"
 
-            msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
+                LINKS[target] = updated_link
+                msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
         elif "link" in stage:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
