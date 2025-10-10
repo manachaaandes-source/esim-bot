@@ -35,7 +35,6 @@ def ensure_data_file():
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def load_data():
     """安全に読み込み"""
     try:
@@ -97,7 +96,7 @@ async def start_cmd(message: types.Message):
         [InlineKeyboardButton(text=f"📞 通話可能 ({len(STOCK['通話可能'])}枚)", callback_data="type_通話可能")],
         [InlineKeyboardButton(text=f"💾 データ ({len(STOCK['データ'])}枚)", callback_data="type_データ")]
     ])
-    await message.answer("こんにちは！PayPay支払いBotです。\nどちらにしますか？\n\n" + stock_info, reply_markup=kb)
+    await message.answer("こんにちは！esim半自販機botです。\nどちらにしますか？\n\n" + stock_info, reply_markup=kb)
 
 
 # === 商品タイプ選択 ===
@@ -111,20 +110,45 @@ async def select_type(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    STATE[uid] = {"stage": "waiting_payment", "type": choice}
-    product = LINKS.get(choice, DEFAULT_LINKS[choice])
+    # 一旦、ユーザーが何を選んだかを保持
+    STATE[uid] = {"stage": "input_count", "type": choice}
 
-    # --- 正規料金メッセージ ---
     await callback.message.answer(
-        f"{choice}ですね。\n"
-        f"お支払い金額は {product['price']} 円です💰\n\n"
+        f"🧾 「{choice}」を選択しました。\n何枚購入しますか？（1〜{len(STOCK[choice])}）"
+    )
+    await callback.answer()
+
+# === 枚数入力 ===
+@dp.message(F.text.regexp(r"^\d+$"))
+async def handle_count_input(message: types.Message):
+    uid = message.from_user.id
+    state = STATE.get(uid)
+    if not state or state.get("stage") != "input_count":
+        return
+
+    count = int(message.text.strip())
+    choice = state["type"]
+
+    if count <= 0:
+        return await message.answer("⚠️ 1以上の枚数を入力してください。")
+    if count > len(STOCK[choice]):
+        return await message.answer(f"⚠️ 在庫不足です（最大 {len(STOCK[choice])} 枚まで）。")
+
+    # ステージ更新
+    STATE[uid] = {"stage": "waiting_payment", "type": choice, "count": count}
+
+    product = LINKS.get(choice, DEFAULT_LINKS[choice])
+    total_price = product["price"] * count
+
+    await message.answer(
+        f"🧾 {choice} を {count} 枚購入ですね。\n"
+        f"合計金額は {total_price} 円です💰\n\n"
         f"こちらのPayPayリンクからお支払いください👇\n"
         f"{product['url']}\n\n"
         "支払い完了後に『完了』と送ってください。"
     )
 
-    # --- 割引コード案内 ---
-    await callback.message.answer(
+    await message.answer(
         "🎟️ 割引コードをお持ちの場合は、今ここで入力してください。\n"
         "（例：RKTN-ABC123）\n"
         "※持っていない場合は無視して『完了』と送ってください。"
@@ -327,6 +351,38 @@ async def list_codes(message: types.Message):
     text = "🎟️ コード一覧\n" + "\n".join([f"{k} | {v['type']} | {'✅使用済' if v['used'] else '🟢未使用'}" for k, v in CODES.items()])
     await message.answer(text)
 
+# === /resetcodes ===
+@dp.message(Command("resetcodes"))
+async def reset_codes(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 使用状態リセット（未使用に戻す）", callback_data="reset_unused")],
+        [InlineKeyboardButton(text="🔴 全削除", callback_data="reset_delete")]
+    ])
+    await message.answer("🎟️ 割引コードのリセット方法を選んでください：", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "reset_unused")
+async def reset_unused(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("権限なし", show_alert=True)
+    for c in CODES.values():
+        c["used"] = False
+    save_data()
+    await callback.message.answer("✅ すべてのコードを『未使用』状態に戻しました。")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "reset_delete")
+async def reset_delete(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("権限なし", show_alert=True)
+    CODES.clear()
+    save_data()
+    await callback.message.answer("🗑️ すべての割引コードを削除しました。")
+    await callback.answer()
 
 # === /config ===
 @dp.message(Command("config"))
@@ -341,7 +397,6 @@ async def config_menu(message: types.Message):
         [InlineKeyboardButton(text="🔗 割引リンク設定", callback_data="cfg_discount_link")]
     ])
     await message.answer("⚙️ どの設定を変更しますか？", reply_markup=kb)
-
 
 # === 設定カテゴリ選択 ===
 @dp.callback_query(F.data.startswith("cfg_"))
@@ -397,6 +452,33 @@ async def cfgsel_type(callback: types.CallbackQuery):
 
     await callback.answer()
 
+# === /backup ===
+@dp.message(Command("backup"))
+async def backup_data(message: types.Message):
+    if not is_admin(message.from_user.id): 
+        return await message.answer("権限なし")
+
+    import shutil, datetime
+    os.makedirs("/app/data/backup", exist_ok=True)
+    filename = f"/app/data/backup/data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    shutil.copy(DATA_FILE, filename)
+    await message.answer(f"💾 バックアップ作成完了:\n`{filename}`", parse_mode="Markdown")
+    
+# === /status ===
+@dp.message(Command("status"))
+async def status_cmd(message: types.Message):
+    if not is_admin(message.from_user.id): 
+        return await message.answer("権限なし")
+    info = (
+        f"📊 Botステータス\n"
+        f"在庫: 通話可能={len(STOCK['通話可能'])} / データ={len(STOCK['データ'])}\n"
+        f"割引コード数: {len(CODES)}\n"
+        f"保存先: {DATA_FILE}\n"
+        f"稼働中: ✅ 正常"
+    )
+    await message.answer(info)
+
+
 # === /help ===
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
@@ -421,6 +503,24 @@ async def inquiry_start(message: types.Message):
     STATE[message.from_user.id] = {"stage": "inquiry_waiting"}
     await message.answer("💬 お問い合わせ内容を入力してください。\n（送信後、管理者に転送されます）")
 
+USERS = set()
+
+@dp.message(F.text)
+async def track_users(message: types.Message):
+    USERS.add(message.from_user.id)
+
+@dp.message(Command("broadcast"))
+async def broadcast(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    content = message.text.replace("/broadcast", "").strip()
+    if not content:
+        return await message.answer("⚠️ 送信内容を指定してください。")
+    for uid in USERS:
+        try:
+            await bot.send_message(uid, f"📢 管理者からのお知らせ:\n{content}")
+        except:
+            pass
+    await message.answer("✅ 全ユーザーにメッセージ送信完了。")
 
 # === ユーザー問い合わせ & 管理者設定 統合ハンドラ ===
 @dp.message(F.text)
