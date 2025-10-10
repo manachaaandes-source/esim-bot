@@ -62,6 +62,7 @@ def save_data():
             f.flush()
             os.fsync(f.fileno())  # ← ファイル確実に書き込む
         print("💾 data.json 保存完了 ✅")
+        print(json.dumps(LINKS, ensure_ascii=False, indent=2))
     except Exception as e:
         print(f"⚠️ data保存失敗: {e}")
 
@@ -487,13 +488,11 @@ async def cfgsel_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     parts = callback.data.split("_")
 
-    # ["cfgsel", "discount", "price", "データ"] or ["cfgsel", "price", "データ"]
     if len(parts) < 3:
         await callback.message.answer("⚠️ 無効な設定データを受信しました。")
         await callback.answer()
         return
 
-    # モードと対象抽出
     if parts[1] == "discount" and len(parts) >= 4:
         mode = f"discount_{parts[2]}"
         target = parts[3]
@@ -501,11 +500,11 @@ async def cfgsel_type(callback: types.CallbackQuery):
         mode = parts[1]
         target = parts[2]
 
-    # ✅ 修正版: 確実にSTATE保持＋デバッグ表示
+    # ✅ 状態を確実に保持（Zeabur対策）
     STATE[uid] = {"stage": f"config_{mode}", "target": target}
     print(f"[CONFIG STATE SET] {uid}: stage=config_{mode}, target={target}")
 
-    # 入力促しメッセージ
+    # 入力メッセージ
     if "price" in mode:
         await callback.message.answer(f"💴 新しい価格を入力してください。\n対象: {target}")
     elif "link" in mode:
@@ -513,9 +512,12 @@ async def cfgsel_type(callback: types.CallbackQuery):
     else:
         await callback.message.answer("⚠️ 不明な設定モードです。")
 
-    # ⚠️ callback.answer() は最後に呼ぶ（STATE上書き前に呼ぶと飛ぶ）
-    await asyncio.sleep(0.2)
-    await callback.answer()
+    # ✅ 遅延付きで callback.answer() 実行
+    await asyncio.sleep(0.5)
+    try:
+        await callback.answer()
+    except Exception as e:
+        print(f"[WARN] callback.answer() skipped: {e}")
 
 # === /backup ===
 @dp.message(Command("backup"))
@@ -643,26 +645,22 @@ async def handle_text_message(message: types.Message):
     text = message.text.strip()
     state = STATE.get(uid)
 
-    # 📨 お問い合わせモード
+    # お問い合わせモード
     if state and state.get("stage") == "inquiry_waiting":
         await bot.send_message(
             ADMIN_ID,
-            f"📩 新しいお問い合わせ\n"
-            f"👤 {message.from_user.full_name}\n"
-            f"🆔 {uid}\n\n"
-            f"📝 内容:\n{text}"
+            f"📩 新しいお問い合わせ\n👤 {message.from_user.full_name}\n🆔 {uid}\n\n📝 内容:\n{text}"
         )
         await message.answer("✅ お問い合わせを送信しました。返信までお待ちください。")
         STATE.pop(uid, None)
-        return
+        return  # ←ここ必須！
 
-    # 👑 管理者設定モード（価格/リンク変更）
+    # 管理者設定モード
     if is_admin(uid) and state and state["stage"].startswith("config_"):
         stage = state["stage"]
         target = state["target"]
         new_value = text
 
-        # --- 価格設定 ---
         if "price" in stage:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
@@ -677,7 +675,6 @@ async def handle_text_message(message: types.Message):
 
             msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
-        # --- リンク設定 ---
         elif "link" in stage:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ URL形式で入力してください。")
@@ -696,10 +693,10 @@ async def handle_text_message(message: types.Message):
             return await message.answer("⚠️ 不明なモードです。")
 
         save_data()
+        print(f"[CONFIG UPDATED] {target} {kind} -> {new_value}")
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
-        print(f"[CONFIG] {target} {kind} -> {new_value}")
-        return
+        return  # ←忘れると他のハンドラに流れて無反応になる
 
 # === 起動 ===
 async def main():
