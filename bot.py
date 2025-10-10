@@ -6,6 +6,7 @@ import json
 import os
 import random
 import string
+import shutil
 
 # === 基本設定 ===
 with open("config.json", "r", encoding="utf-8") as f:
@@ -72,6 +73,21 @@ def save_data():
     except Exception as e:
         print(f"⚠️ data保存失敗: {e}")
 
+def auto_backup():
+    """在庫減少など重要操作後に自動バックアップ"""
+    try:
+        backup_dir = "/app/data/backup"
+        os.makedirs(backup_dir, exist_ok=True)
+
+        for f in os.listdir(backup_dir):
+            if f.startswith("data_auto") and f.endswith(".json"):
+                os.remove(os.path.join(backup_dir, f))
+
+        backup_path = os.path.join(backup_dir, "data_auto.json")
+        shutil.copy(DATA_FILE, backup_path)
+        print(f"🗂️ 自動バックアップ作成完了: {backup_path}")
+    except Exception as e:
+        print(f"⚠️ 自動バックアップ失敗: {e}")
 
 STOCK, LINKS, CODES = load_data()
 
@@ -103,6 +119,8 @@ async def start_cmd(message: types.Message):
         "/code - 割引コードを発行\n"
         "/codes - コード一覧表示\n"
         "/help - この一覧を表示\n"
+        "/restore_auto - 自動バックアップから復元\n"
+        "/broadcast メッセージ - 全ユーザーにお知らせ送信\n"
     )
     await message.answer(commands_text)
 
@@ -348,6 +366,7 @@ async def confirm_send(callback: types.CallbackQuery):
         )
 
     save_data()
+    auto_backup()
     await bot.send_message(target_id, NOTICE)
     STATE.pop(target_id, None)
     await callback.answer("完了")
@@ -584,6 +603,24 @@ async def confirm_restore(callback: types.CallbackQuery):
     await callback.message.answer(f"✅ バックアップを復元しました：\n`{filename}`", parse_mode="Markdown")
     await callback.answer("復元完了")
 
+# === /restore_auto ===
+@dp.message(Command("restore_auto"))
+async def restore_auto_backup(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    backup_path = "/app/data/backup/data_auto.json"
+    if not os.path.exists(backup_path):
+        return await message.answer("⚠️ 自動バックアップが見つかりません。")
+
+    import shutil
+    shutil.copy(backup_path, DATA_FILE)
+
+    global STOCK, LINKS, CODES
+    STOCK, LINKS, CODES = load_data()
+
+    await message.answer("✅ 自動バックアップを復元しました。")
+
 # === /status ===
 @dp.message(Command("status"))
 async def status_cmd(message: types.Message):
@@ -658,30 +695,27 @@ async def show_history(message: types.Message):
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
     if is_admin(message.from_user.id):
-        # 👑 管理者向け完全版
         text = (
-            "🧭 **コマンド一覧（管理者用）**\n\n"
-            "【ユーザー向け】\n"
-            "/start - 購入メニューを開く\n"
-            "/保証 - 保証申請を行う\n"
-            "/問い合わせ - 管理者に直接メッセージを送る\n\n"
-            "【管理者専用】\n"
-            "/addstock 通話可能|データ - 在庫を追加\n"
-            "/stock - 在庫確認\n"
-            "/config - 設定変更（価格・リンク）\n"
-            "/code 通話可能|データ - 割引コードを発行\n"
-            "/codes - コード一覧表示\n"
-            "/resetcodes - 割引コードのリセット/削除\n"
-            "/backup - データをバックアップ\n"
-            "/restore - バックアップから復元\n"
-            "/status - Botの稼働状況を表示\n"
-            "/broadcast メッセージ - 全ユーザーに通知\n"
-            "/help - この一覧を表示\n"
-            "/stats - 売上統計を表示\n"
-            "/history - 購入履歴を表示\n"
+           "🧭 コマンド一覧\n\n"
+           "【ユーザー向け】\n"
+           "/start - 購入メニューを開く\n"
+           "/保証 - 保証申請を行う\n"
+           "/問い合わせ - 管理者に直接メッセージを送る\n\n"
+           "【管理者専用】\n"
+           "/addstock 通話可能|データ - 在庫を追加\n"
+           "/stock - 在庫確認\n"
+           "/config - 設定変更（価格・リンク）\n"
+           "/code - 割引コードを発行\n"
+           "/codes - コード一覧表示\n"
+           "/resetcodes - 割引コードをリセット\n"
+           "/backup - データをバックアップ\n"
+           "/restore - バックアップから復元\n"
+           "/restore_auto - 自動バックアップから復元\n"
+           "/broadcast メッセージ - 全ユーザーにお知らせ送信\n"
+           "/返信 <ID> <内容> - 問い合わせへの返信\n"
+           "/help - この一覧を表示\n"
         )
     else:
-        # 👤 一般ユーザー向け
         text = (
             "🧭 **コマンド一覧（ユーザー用）**\n\n"
             "/start - 購入メニューを開く\n"
@@ -693,12 +727,33 @@ async def help_cmd(message: types.Message):
 
     await message.answer(text, parse_mode="Markdown")
 
-
 # === /問い合わせ ===
 @dp.message(Command("問い合わせ"))
 async def inquiry_start(message: types.Message):
     STATE[message.from_user.id] = {"stage": "inquiry_waiting"}
     await message.answer("💬 お問い合わせ内容を入力してください。\n（送信後、管理者に転送されます）")
+
+# ⬇⬇⬇ ここに追加 ⬇⬇⬇
+
+# === /返信 ===
+@dp.message(Command("返信"))
+async def reply_to_user(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    try:
+        parts = message.text.split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer("使い方: /返信 <ユーザーID> <内容>")
+
+        target_id = int(parts[1])
+        reply_text = parts[2]
+
+        await bot.send_message(target_id, f"💬 管理者からの返信:\n{reply_text}")
+        await message.answer("✅ ユーザーに返信を送信しました。")
+
+    except Exception as e:
+        await message.answer(f"⚠️ 返信に失敗しました: {e}")
 
 # === ユーザー問い合わせ & 管理者設定 統合ハンドラ ===
 @dp.message(F.text)
@@ -737,8 +792,8 @@ async def handle_text_message(message: types.Message):
                 updated_link["price"] = int(new_value)
                 kind = "通常価格"
 
-                LINKS[target] = updated_link
-                msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
+            LINKS[target] = updated_link
+            msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
         elif "link" in stage:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
@@ -761,7 +816,70 @@ async def handle_text_message(message: types.Message):
         print(f"[CONFIG UPDATED] {target} {kind} -> {new_value}")
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
-        return  # ←忘れると他のハンドラに流れて無反応になる
+        
+# === 全ユーザー通知機能 ===
+USERS_FILE = "/app/data/users.json"
+
+def load_users():
+    """ユーザー一覧を読み込む"""
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
+
+def save_users():
+    """ユーザー一覧を保存する"""
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(USERS), f, ensure_ascii=False, indent=2)
+
+# 初期ロード
+USERS = load_users()
+
+# === ユーザー記録 ===
+@dp.message(F.text)
+async def track_users(message: types.Message):
+    """全ユーザーを記録"""
+    # /で始まるメッセージは除外（コマンド実行時は記録しない）
+    if not message.text:
+        return  # テキストがない（画像・スタンプなど）とき安全スキップ
+    if message.text.startswith("/"):
+        return
+
+    if message.from_user.id not in USERS:
+        USERS.add(message.from_user.id)
+        save_users()
+        print(f"👤 新規ユーザー登録: {message.from_user.id} ({message.from_user.full_name})")
+
+
+# === 全ユーザーへ一斉通知 ===
+@dp.message(Command("broadcast"))
+async def broadcast(message: types.Message):
+    """管理者専用：全ユーザーにお知らせ送信"""
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    # /broadcast の後にメッセージがあるか確認
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer("⚠️ 送信内容を指定してください。\n例: /broadcast メンテナンスのお知らせ")
+
+    content = parts[1].strip()
+    if not content:
+        return await message.answer("⚠️ 内容が空です。")
+
+    sent = 0
+    failed = 0
+    for uid in USERS:
+        try:
+            await bot.send_message(uid, f"📢 管理者からのお知らせ:\n{content}")
+            sent += 1
+        except Exception as e:
+            print(f"⚠️ ユーザー {uid} への送信失敗: {e}")
+            failed += 1
+
+    await message.answer(f"✅ 通知送信完了\n成功: {sent}件 / 失敗: {failed}件")
+    return  # ← 他のハンドラに流れないようにする
+
 
 # === 起動 ===
 async def main():
