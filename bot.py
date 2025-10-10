@@ -493,7 +493,9 @@ async def cfgsel_type(callback: types.CallbackQuery):
         mode = parts[1]
         target = parts[2]
 
+    # ✅ 修正版: 確実にSTATE保持＋デバッグ表示
     STATE[uid] = {"stage": f"config_{mode}", "target": target}
+    print(f"[CONFIG STATE SET] {uid}: stage=config_{mode}, target={target}")
 
     # 入力促しメッセージ
     if "price" in mode:
@@ -503,6 +505,8 @@ async def cfgsel_type(callback: types.CallbackQuery):
     else:
         await callback.message.answer("⚠️ 不明な設定モードです。")
 
+    # ⚠️ callback.answer() は最後に呼ぶ（STATE上書き前に呼ぶと飛ぶ）
+    await asyncio.sleep(0.2)
     await callback.answer()
 
 # === /backup ===
