@@ -575,23 +575,42 @@ async def status_cmd(message: types.Message):
     )
     await message.answer(info)
 
-
 # === /help ===
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
-    await message.answer(
-        "🧭 コマンド一覧\n\n"
-        "【ユーザー】\n"
-        "/start - 購入を開始\n"
-        "/保証 - 保証申請\n"
-        "/問い合わせ - 管理者に連絡\n\n"
-        "【管理者】\n"
-        "/addstock 通話可能|データ\n"
-        "/stock\n"
-        "/code\n"
-        "/codes\n"
-        "/config\n/help"
-    )
+    if is_admin(message.from_user.id):
+        # 👑 管理者向け完全版
+        text = (
+            "🧭 **コマンド一覧（管理者用）**\n\n"
+            "【ユーザー向け】\n"
+            "/start - 購入メニューを開く\n"
+            "/保証 - 保証申請を行う\n"
+            "/問い合わせ - 管理者に直接メッセージを送る\n\n"
+            "【管理者専用】\n"
+            "/addstock 通話可能|データ - 在庫を追加\n"
+            "/stock - 在庫確認\n"
+            "/config - 設定変更（価格・リンク）\n"
+            "/code 通話可能|データ - 割引コードを発行\n"
+            "/codes - コード一覧表示\n"
+            "/resetcodes - 割引コードのリセット/削除\n"
+            "/backup - データをバックアップ\n"
+            "/restore - バックアップから復元\n"
+            "/status - Botの稼働状況を表示\n"
+            "/broadcast メッセージ - 全ユーザーに通知\n"
+            "/help - この一覧を表示\n"
+        )
+    else:
+        # 👤 一般ユーザー向け
+        text = (
+            "🧭 **コマンド一覧（ユーザー用）**\n\n"
+            "/start - 購入メニューを開く\n"
+            "/保証 - 保証申請を行う\n"
+            "/問い合わせ - 管理者に直接メッセージを送る\n"
+            "/help - コマンド一覧を表示\n\n"
+            "ℹ️ 一部コマンドは管理者専用です。"
+        )
+
+    await message.answer(text, parse_mode="Markdown")
 
 
 # === /問い合わせ ===
@@ -658,9 +677,17 @@ async def handle_text_message(message: types.Message):
         elif "link" in mode:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ URL形式で入力してください。")
+
             LINKS.setdefault(target, {})
-            LINKS[target][mode] = new_value
-            kind = "割引リンク" if "discount" in mode else "通常リンク"
+
+            # ✅ 修正済み: ここでdiscountかどうかでキーを変える
+            if "discount" in mode:
+                LINKS[target]["discount_link"] = new_value
+                kind = "割引リンク"
+            else:
+                LINKS[target]["url"] = new_value  # ←ここが本命（正規リンク）
+                kind = "通常リンク"
+
             msg = f"🔗 {target} の{kind}を更新しました。"
 
         else:
