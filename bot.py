@@ -619,52 +619,37 @@ async def inquiry_start(message: types.Message):
     STATE[message.from_user.id] = {"stage": "inquiry_waiting"}
     await message.answer("💬 お問い合わせ内容を入力してください。\n（送信後、管理者に転送されます）")
 
+# === ユーザー問い合わせ / 管理者設定 / ユーザー追跡 統合ハンドラ ===
 USERS = set()
 
 @dp.message(F.text)
-async def track_users(message: types.Message):
-    USERS.add(message.from_user.id)
-
-@dp.message(Command("broadcast"))
-async def broadcast(message: types.Message):
-    if not is_admin(message.from_user.id): return
-    content = message.text.replace("/broadcast", "").strip()
-    if not content:
-        return await message.answer("⚠️ 送信内容を指定してください。")
-    for uid in USERS:
-        try:
-            await bot.send_message(uid, f"📢 管理者からのお知らせ:\n{content}")
-        except:
-            pass
-    await message.answer("✅ 全ユーザーにメッセージ送信完了。")
-
-# === ユーザー問い合わせ & 管理者設定 統合ハンドラ ===
-@dp.message(F.text)
 async def handle_text_message(message: types.Message):
     uid = message.from_user.id
+    text = message.text.strip()
+    USERS.add(uid)  # ✅ ユーザー追跡もここでやる
     state = STATE.get(uid)
 
-    # 📨 ユーザーが問い合わせ中の場合
+    # 📨 お問い合わせモード
     if state and state.get("stage") == "inquiry_waiting":
         await bot.send_message(
             ADMIN_ID,
             f"📩 新しいお問い合わせ\n"
             f"👤 {message.from_user.full_name}\n"
             f"🆔 {uid}\n\n"
-            f"📝 内容:\n{message.text}"
+            f"📝 内容:\n{text}"
         )
         await message.answer("✅ お問い合わせを送信しました。返信までお待ちください。")
         STATE.pop(uid, None)
         return
 
-    # 👑 管理者設定（価格/リンク）モード中の場合
+    # 👑 管理者設定（価格/リンク）
     if is_admin(uid) and state and state["stage"].startswith("config_"):
         stage = state["stage"]
         target = state["target"]
-        new_value = message.text.strip()
+        new_value = text
         mode = stage.replace("config_", "")
 
-        # --- 価格設定 ---
+        # --- 価格変更 ---
         if "price" in mode:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
@@ -673,21 +658,17 @@ async def handle_text_message(message: types.Message):
             kind = "割引価格" if "discount" in mode else "通常価格"
             msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
-        # --- リンク設定 ---
+        # --- リンク変更 ---
         elif "link" in mode:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ URL形式で入力してください。")
-
             LINKS.setdefault(target, {})
-
-            # ✅ 修正済み: ここでdiscountかどうかでキーを変える
             if "discount" in mode:
                 LINKS[target]["discount_link"] = new_value
                 kind = "割引リンク"
             else:
-                LINKS[target]["url"] = new_value  # ←ここが本命（正規リンク）
+                LINKS[target]["url"] = new_value
                 kind = "通常リンク"
-
             msg = f"🔗 {target} の{kind}を更新しました。"
 
         else:
@@ -696,6 +677,7 @@ async def handle_text_message(message: types.Message):
         save_data()
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
+        return
 
 # === 起動 ===
 async def main():
