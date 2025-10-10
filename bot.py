@@ -619,14 +619,11 @@ async def inquiry_start(message: types.Message):
     STATE[message.from_user.id] = {"stage": "inquiry_waiting"}
     await message.answer("💬 お問い合わせ内容を入力してください。\n（送信後、管理者に転送されます）")
 
-# === ユーザー問い合わせ / 管理者設定 / ユーザー追跡 統合ハンドラ ===
-USERS = set()
-
+# === ユーザー問い合わせ & 管理者設定 統合ハンドラ ===
 @dp.message(F.text)
 async def handle_text_message(message: types.Message):
     uid = message.from_user.id
     text = message.text.strip()
-    USERS.add(uid)  # ✅ ユーザー追跡もここでやる
     state = STATE.get(uid)
 
     # 📨 お問い合わせモード
@@ -649,7 +646,7 @@ async def handle_text_message(message: types.Message):
         new_value = text
         mode = stage.replace("config_", "")
 
-        # --- 価格変更 ---
+        # --- 価格設定 ---
         if "price" in mode:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
@@ -658,7 +655,7 @@ async def handle_text_message(message: types.Message):
             kind = "割引価格" if "discount" in mode else "通常価格"
             msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
-        # --- リンク変更 ---
+        # --- リンク設定 ---
         elif "link" in mode:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ URL形式で入力してください。")
@@ -671,12 +668,15 @@ async def handle_text_message(message: types.Message):
                 kind = "通常リンク"
             msg = f"🔗 {target} の{kind}を更新しました。"
 
+        # --- 不明なモード ---
         else:
             return await message.answer("⚠️ 不明なモードです。")
 
+        # ✅ 共通処理：保存＋返信
         save_data()
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
+        print(f"✅ {target} の {mode} 更新完了 ({new_value})")
         return
 
 # === 起動 ===
