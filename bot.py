@@ -37,13 +37,18 @@ def ensure_data_file():
         return json.load(f)
 
 def load_data():
-    """安全に読み込み"""
     try:
-        data = ensure_data_file()
-        stock = data.get("STOCK", {"通話可能": [], "データ": []})
-        links = data.get("LINKS", DEFAULT_LINKS)
-        codes = data.get("CODES", {})
-        return stock, links, codes
+        if not os.path.exists(DATA_FILE):
+            return ensure_data_file()
+
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # メモリ上に上書き
+        return (
+            data.get("STOCK", {"通話可能": [], "データ": []}),
+            data.get("LINKS", DEFAULT_LINKS),
+            data.get("CODES", {})
+        )
     except Exception as e:
         print(f"⚠️ data.json読み込み失敗: {e}")
         return {"通話可能": [], "データ": []}, DEFAULT_LINKS, {}
@@ -51,9 +56,12 @@ def load_data():
 
 def save_data():
     try:
+        data = {"STOCK": STOCK, "LINKS": LINKS, "CODES": CODES}
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump({"STOCK": STOCK, "LINKS": LINKS, "CODES": CODES}, f, ensure_ascii=False, indent=4)
-        print("💾 data.json 保存完了")
+            json.dump(data, f, ensure_ascii=False, indent=4)
+            f.flush()
+            os.fsync(f.fileno())  # ← ファイル確実に書き込む
+        print("💾 data.json 保存完了 ✅")
     except Exception as e:
         print(f"⚠️ data保存失敗: {e}")
 
