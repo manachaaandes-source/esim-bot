@@ -429,7 +429,7 @@ async def help_cmd(message: types.Message):
             "ℹ️ 一部コマンドは管理者専用です。"
         )
 
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="HTML")
 
 # === /addstock ===
 @dp.message(Command("addstock"))
@@ -750,7 +750,7 @@ async def stats_cmd(message: types.Message):
         f"　📞 通話可能: {len(STOCK['通話可能'])}枚\n"
         f"　💾 データ: {len(STOCK['データ'])}枚\n"
     )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="HTML")
 
 
 # === /history ===
