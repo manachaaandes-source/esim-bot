@@ -165,57 +165,72 @@ async def start_cmd(message: types.Message):
         reply_markup=kb
     )
 
-# === 商品タイプ選択 ===
+# --- 商品タイプ選択後（カスタム商品対応版） ---
 @dp.callback_query(F.data.startswith("type_"))
 async def select_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    choice = callback.data.split("_")[1]
+    type_name = callback.data.split("_", 1)[1]  # "type_通話可能" → "通話可能"
 
-    if len(STOCK[choice]) == 0:
-        await callback.message.answer(f"⚠️ 現在「{choice}」の在庫がありません。")
+    # ステート更新
+    STATE[uid] = {"stage": "select_count", "type": type_name}
+
+    # 在庫確認
+    stock_len = len(STOCK.get(type_name, []))
+    if stock_len == 0:
+        await callback.message.answer(f"⚠️ 現在「{type_name}」の在庫がありません。")
         await callback.answer()
         return
 
-    # 一旦、ユーザーが何を選んだかを保持
-    STATE[uid] = {"stage": "input_count", "type": choice}
-
+    # 案内送信
     await callback.message.answer(
-        f"🧾 「{choice}」を選択しました。\n何枚購入しますか？（1〜{len(STOCK[choice])}）"
+        f"「{type_name}」を選択しました。\n"
+        f"何枚購入しますか？（1〜{min(stock_len, 9)}）"
     )
     await callback.answer()
 
-# --- 枚数入力 ---
+# --- 枚数入力（全商品対応版） ---
 @dp.message(F.text.regexp(r"^\d+$"))
 async def handle_count_input(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
-    if not state or state.get("stage") != "input_count":
-        return
+    if not state or state.get("stage") not in ["input_count", "select_count"]:
+        return  # 他のステージなら無視
 
     count = int(message.text.strip())
     choice = state["type"]
 
+    # === 在庫確認 ===
+    available_stock = STOCK.get(choice, [])
+    if len(available_stock) == 0:
+        return await message.answer(f"⚠️ 現在「{choice}」の在庫がありません。")
+
     if count <= 0:
         return await message.answer("⚠️ 1以上の枚数を入力してください。")
-    if count > len(STOCK[choice]):
-        return await message.answer(f"⚠️ 在庫不足です（最大 {len(STOCK[choice])} 枚まで）。")
+    if count > len(available_stock):
+        return await message.answer(f"⚠️ 在庫不足です（最大 {len(available_stock)} 枚まで）。")
 
-    # --- 基本価格 ---
-    base_price = FIXED_PRICES[choice]["normal"]
+    # === 価格情報を取得 ===
+    link_info = LINKS.get(choice)
+    if not link_info:
+        return await message.answer(f"⚠️ 「{choice}」のリンク情報が未設定です。\n/config で設定してください。")
 
-    # --- まとめ買い割引 ---
+    base_price = link_info.get("price", 0)
+    if base_price == 0:
+        base_price = FIXED_PRICES.get(choice, {}).get("normal", 0)  # 古い商品ならここで代替
+
+    # === まとめ買い割引 ===
     discount_rate = 0
+    discount_type = None
     if 10 <= count:
         discount_rate = 0.10
         discount_type = "10%"
     elif 6 <= count <= 9:
         discount_rate = 0.05
         discount_type = "5%"
-    else:
-        discount_type = None
 
     total_price = int(base_price * count * (1 - discount_rate))
 
+    # === 状態を更新 ===
     STATE[uid] = {
         "stage": "waiting_payment",
         "type": choice,
@@ -225,21 +240,20 @@ async def handle_count_input(message: types.Message):
         "discount_type": discount_type
     }
 
-    msg = f"🧾 {choice} を {count} 枚購入ですね。\n合計金額は {total_price:,} 円です💰"
+    # === メッセージ構築 ===
+    msg = f"🧾 {choice} を {count} 枚購入ですね。\n💴 合計金額: {total_price:,} 円"
 
-    if not discount_type:
+    if discount_type:
+        msg += f"\n🎉 まとめ買い割引（{discount_type}OFF）が適用されました。"
+    else:
         msg += (
             "\n🎟️ 割引コードをお持ちの場合は今入力できます。\n"
             "⚠️ 2〜5枚の購入時は1枚分のみ割引価格（1250/2500円）になります。"
         )
-    else:
-        msg += f"\n🎉 まとめ買い割引（{discount_type}OFF）が適用されました。"
 
-    product = LINKS.get(choice, DEFAULT_LINKS[choice])
-    msg += (
-        f"\n\nこちらのPayPayリンク👇\n{product['url']}\n\n"
-        "支払い後に『完了』と送ってください。"
-    )
+    # === リンク付与 ===
+    pay_url = link_info.get("url") or DEFAULT_LINKS.get(choice, {}).get("url", "未設定")
+    msg += f"\n\nこちらのPayPayリンク👇\n{pay_url}\n\n支払い後に『完了』と送ってください。"
 
     await message.answer(msg)
 
@@ -916,7 +930,10 @@ async def handle_text_message(message: types.Message):
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
 
-            LINKS.setdefault(target, {})
+            # 存在しない商品でも安全に初期化
+            if target not in LINKS:
+                LINKS[target] = {"url": "未設定", "price": 0, "discount_link": "未設定", "discount_price": 0}
+
             updated_link = dict(LINKS[target])
             if "discount" in stage:
                 updated_link["discount_price"] = int(new_value)
