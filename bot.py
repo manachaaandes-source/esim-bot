@@ -514,30 +514,42 @@ async def create_code(message: types.Message):
     await message.answer(f"🎟️ コード発行完了\n<code>{code}</code> ({ctype})", parse_mode="HTML")
 
 # 🔽🔽🔽 この下に追加 🔽🔽🔽
-# === /addproduct ===
+# === /addproduct（修正版） ===
 @dp.message(Command("addproduct"))
 async def add_product(message: types.Message):
-    """新しい商品カテゴリを追加"""
+    """新しい商品カテゴリを追加（在庫・リンク・価格を自動登録）"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
 
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        return await message.answer("⚙️ 使い方: /addproduct <商品名>\n例: /addproduct プリペイドSIM")
+        return await message.answer("⚙️ 使い方: /addproduct <商品名>\n例: /addproduct 1日eSIM（500MB）")
 
     new_type = parts[1].strip()
 
-    # 既存チェック
-    if new_type in STOCK:
-        return await message.answer(f"⚠️ 「{new_type}」はすでに存在しています。")
+    # 既に存在している場合
+    if new_type in STOCK or new_type in LINKS:
+        return await message.answer(f"⚠️ 「{new_type}」はすでに登録済みです。")
 
-    # 新しい商品カテゴリを登録
+    # 在庫とリンクデータを新規作成
     STOCK[new_type] = []
-    LINKS[new_type] = {"url": "未設定", "price": 0}
-    save_data()
+    LINKS[new_type] = {
+        "url": "未設定",
+        "price": 0,
+        "discount_link": "未設定",
+        "discount_price": 0
+    }
 
-    await message.answer(f"✅ 新しい商品カテゴリ「{new_type}」を追加しました。\n"
-                         f"在庫追加は /addstock {new_type} で行えます。")
+    save_data()
+    await message.answer(
+        f"✅ 新しい商品カテゴリ「{new_type}」を追加しました。\n"
+        f"🧾 現在の設定:\n"
+        f"　価格: 0円\n"
+        f"　リンク: 未設定\n"
+        f"　割引価格: 0円\n"
+        f"　割引リンク: 未設定\n\n"
+        f"📸 在庫を追加するには：\n/addstock {new_type}"
+    )
 
 # === /addstock（改良版） ===
 @dp.message(Command("addstock"))
@@ -603,6 +615,7 @@ async def reset_delete(callback: types.CallbackQuery):
 # === /config ===
 @dp.message(Command("config"))
 async def config_menu(message: types.Message):
+    """設定メニュー（管理者専用）"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし。")
 
@@ -614,25 +627,33 @@ async def config_menu(message: types.Message):
     ])
     await message.answer("⚙️ どの設定を変更しますか？", reply_markup=kb)
 
-# === 設定カテゴリ選択 ===
+
+# === 設定カテゴリ選択（全商品を動的に表示） ===
 @dp.callback_query(F.data.startswith("cfg_"))
 async def cfg_select(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    mode = callback.data.split("_", 1)[1]  # ← discount_price, discount_link もそのまま取る
+    mode = callback.data.split("_", 1)[1]  # 例: price, discount_price, link, discount_link
 
-    # 種類に応じてラベルを変える
+    # 表示ラベルを設定
     if "link" in mode:
-        label = "URL"
+        label = "リンク"
     elif "price" in mode:
         label = "価格"
     else:
         label = "設定"
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💾 データ", callback_data=f"cfgsel_{mode}_データ")],
-        [InlineKeyboardButton(text="📞 通話可能", callback_data=f"cfgsel_{mode}_通話可能")]
-    ])
-    await callback.message.answer(f"🛠 どちらの{label}を変更しますか？", reply_markup=kb)
+    # === 動的に商品ボタン生成 ===
+    if not LINKS:
+        return await callback.message.answer("⚠️ 商品データが存在しません。")
+
+    buttons = [
+        [InlineKeyboardButton(text=f"{name}", callback_data=f"cfgsel_{mode}_{name}")]
+        for name in LINKS.keys()
+    ]
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await callback.message.answer(f"🛠 どの商品カテゴリの{label}を変更しますか？", reply_markup=kb)
     await callback.answer()
 
 
