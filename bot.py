@@ -280,8 +280,7 @@ async def handle_done(message: types.Message):
         "スクリーンショットを送ってください。"
     )
 
-
-# === 割引コード認証 ===
+# === 割引コード認証（通常割引 + 金額クーポン対応） ===
 @dp.message(F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
 async def check_code(message: types.Message):
     uid = message.from_user.id
@@ -297,33 +296,56 @@ async def check_code(message: types.Message):
 
     choice = state["type"]
     count = state.get("count", 1)
-    if CODES[code]["type"] != choice:
+    code_data = CODES[code]
+
+    # ✅ 対象タイプチェック
+    if code_data["type"] != choice:
         return await message.answer("⚠️ このコードは別タイプ用です。")
 
-    # --- 割引価格ロジック ---
+    # --- 基本価格 ---
     base_price = FIXED_PRICES[choice]["normal"]
     discount_price = FIXED_PRICES[choice]["discount"]
+    total_price = base_price * count
 
-    if count == 1:
-        total_price = discount_price
-    elif 2 <= count <= 5:
-        total_price = discount_price + base_price * (count - 1)
+    # ✅ 割引タイプ別ロジック
+    if "discount_value" in code_data:
+        # 金額OFFクーポン
+        off = code_data["discount_value"]
+        total_price = max(0, total_price - off)
+        msg = (
+            f"🎟️ クーポンコードが適用されました！\n"
+            f"💸 {off:,}円引き\n"
+            f"💴 支払金額: {total_price:,}円"
+        )
     else:
-        total_price = base_price * count  # 6枚以上はまとめ買い割引優先
+        # 既存の通常割引コード
+        if count == 1:
+            total_price = discount_price
+        elif 2 <= count <= 5:
+            total_price = discount_price + base_price * (count - 1)
+        else:
+            total_price = base_price * count  # 6枚以上はまとめ買い割引優先
+        msg = (
+            f"🎉 割引コードが承認されました！\n"
+            f"⚠️ 2〜5枚購入時は1枚分のみ割引適用です。\n\n"
+            f"💸 支払金額: {total_price:,}円\n"
+            f"💴 割引価格: {discount_price}円（1枚目のみ）"
+        )
 
-    # コード消費
+    # --- コード消費・保存 ---
     CODES[code]["used"] = True
     save_data()
 
     STATE[uid]["discount_code"] = code
     STATE[uid]["final_price"] = total_price
 
+    # --- リンク選択 ---
+    link_info = LINKS.get(choice, {})
+    pay_link = link_info.get("discount_link") or link_info.get("url", "リンク未設定")
+
     await message.answer(
-        f"🎉 割引コードが承認されました！\n"
-        f"⚠️ 2〜5枚購入時は1枚分のみ割引適用です。\n\n"
-        f"💸 支払金額: {total_price:,}円\n"
-        f"💴 割引価格: {discount_price}円（1枚目のみ）\n\n"
-        f"こちらのリンク👇\n{LINKS[choice]['discount_link']}\n\n"
+        f"{msg}\n\n"
+        f"こちらのリンク👇\n{pay_link}\n\n"
         "支払い後に『完了』と送ってください。"
     )
 
@@ -513,19 +535,46 @@ async def stock_cmd(message: types.Message):
     info = "\n".join([f"{k}: {len(v)}枚" for k, v in STOCK.items()])
     await message.answer(f"📦 在庫状況\n{info}")
 
-
-# === /code ===
+# === /code（割引金額対応版） ===
 @dp.message(Command("code"))
 async def create_code(message: types.Message):
-    if not is_admin(message.from_user.id): return await message.answer("権限なし")
+    """割引コードを発行（タイプ or 金額付き対応）"""
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
     parts = message.text.split()
-    if len(parts) < 2 or parts[1] not in STOCK:
-        return await message.answer("使い方: /code 通話可能 または /code データ")
+    if len(parts) < 2:
+        return await message.answer("⚙️ 使い方:\n"
+                                    "/code 通話可能\n"
+                                    "/code データ\n"
+                                    "/code 通話可能 1500円off")
+
     ctype = parts[1]
+    if ctype not in STOCK:
+        return await message.answer(f"⚠️ 『{ctype}』 は存在しません。")
+
+    # --- 割引金額の指定を確認 ---
+    discount_value = None
+    if len(parts) >= 3:
+        raw = parts[2].replace("円", "").replace("OFF", "").replace("off", "")
+        if raw.isdigit():
+            discount_value = int(raw)
+        else:
+            return await message.answer("⚠️ 金額指定は『1500円off』のように入力してください。")
+
+    # --- コード生成 ---
     code = "RKTN-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    CODES[code] = {"used": False, "type": ctype}
+
+    # --- 登録内容を分岐 ---
+    if discount_value:
+        CODES[code] = {"used": False, "type": ctype, "discount_value": discount_value}
+        msg = f"🎟️ 金額クーポン発行完了\n<code>{code}</code>\n対象: {ctype}\n💴 割引額: {discount_value:,}円OFF"
+    else:
+        CODES[code] = {"used": False, "type": ctype}
+        msg = f"🎟️ 通常割引コード発行\n<code>{code}</code>\n対象: {ctype}"
+
     save_data()
-    await message.answer(f"🎟️ コード発行完了\n<code>{code}</code> ({ctype})", parse_mode="HTML")
+    await message.answer(msg, parse_mode="HTML")
 
 # 🔽🔽🔽 この下に追加 🔽🔽🔽
 # === /addproduct（修正版） ===
@@ -588,10 +637,20 @@ async def addstock(message: types.Message):
 # === /codes ===
 @dp.message(Command("codes"))
 async def list_codes(message: types.Message):
-    if not is_admin(message.from_user.id): return await message.answer("権限なし")
-    if not CODES: return await message.answer("コードなし")
-    text = "🎟️ コード一覧\n" + "\n".join([f"{k} | {v['type']} | {'✅使用済' if v['used'] else '🟢未使用'}" for k, v in CODES.items()])
-    await message.answer(text)
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+    if not CODES:
+        return await message.answer("コードなし")
+
+    lines = []
+    for k, v in CODES.items():
+        status = "✅使用済" if v["used"] else "🟢未使用"
+        if "discount_value" in v:
+            lines.append(f"{k} | {v['type']} | 💴{v['discount_value']}円OFF | {status}")
+        else:
+            lines.append(f"{k} | {v['type']} | 通常割引 | {status}")
+
+    await message.answer("🎟️ コード一覧\n" + "\n".join(lines))
 
 # === /resetcodes ===
 @dp.message(Command("resetcodes"))
