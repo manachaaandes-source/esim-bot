@@ -103,35 +103,67 @@ def is_admin(uid): return uid == ADMIN_ID
 # === /start ===
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
+    """起動時メニューとコマンド一覧"""
     STATE[message.from_user.id] = {"stage": "select"}
 
     # --- コマンド一覧 ---
-    commands_text = (
-        "🧭 コマンド一覧\n\n"
-        "【ユーザー向け】\n"
-        "/start - 購入メニューを開く\n"
-        "/保証 - 保証申請を行う\n"
-        "/問い合わせ - 管理者に直接メッセージを送る\n\n"
-        "【管理者専用】\n"
-        "/addstock 通話可能|データ - 在庫を追加\n"
-        "/stock - 在庫確認\n"
-        "/config - 設定変更（価格・リンク）\n"
-        "/code - 割引コードを発行\n"
-        "/codes - コード一覧表示\n"
-        "/help - この一覧を表示\n"
-        "/restore_auto - 自動バックアップから復元\n"
-        "/broadcast メッセージ - 全ユーザーにお知らせ送信\n"
+    if is_admin(message.from_user.id):
+        commands_text = (
+            "🧭 <b>コマンド一覧</b>\n\n"
+            "【🧑‍💻 ユーザー向け】\n"
+            "/start - 購入メニューを開く\n"
+            "/保証 - 保証申請を行う\n"
+            "/問い合わせ - 管理者に直接メッセージを送る\n"
+            "/help - コマンド一覧を表示\n\n"
+            "【👑 管理者専用】\n"
+            "/addstock &lt;商品名&gt; - 在庫を追加\n"
+            "/addproduct &lt;商品名&gt; - 新しい商品カテゴリを追加\n"
+            "/stock - 在庫確認\n"
+            "/config - 設定変更（価格・リンク・割引）\n"
+            "/code &lt;タイプ&gt; - 割引コードを発行（通話可能 / データなど）\n"
+            "/codes - コード一覧を表示\n"
+            "/resetcodes - 割引コードをリセット（未使用に戻す / 全削除）\n"
+            "/backup - データをバックアップ保存\n"
+            "/restore - 手動バックアップから復元\n"
+            "/restore_auto - 自動バックアップから復元\n"
+            "/status - 現在のBotステータス確認\n"
+            "/stats - 販売統計レポートを表示\n"
+            "/history - 直近の購入履歴を表示\n"
+            "/broadcast &lt;内容&gt; - 全ユーザーに一斉通知\n"
+            "/返信 &lt;ユーザーID&gt; &lt;内容&gt; - 問い合わせに返信を送信\n"
+            "/help - このコマンド一覧を再表示\n\n"
+            "📦 例：\n"
+            "　/addstock データ\n"
+            "　/addproduct プリペイドSIM\n"
+            "　/返信 123456789 こんにちは！\n"
+        )
+    else:
+        commands_text = (
+            "🧭 <b>コマンド一覧（ユーザー用）</b>\n\n"
+            "/start - 購入メニューを開く\n"
+            "/保証 - 保証申請を行う\n"
+            "/問い合わせ - 管理者に直接メッセージを送る\n"
+            "/help - コマンド一覧を表示\n\n"
+            "ℹ️ 一部コマンドは管理者専用です。"
+        )
+
+    await message.answer(commands_text, parse_mode="HTML")
+
+    # --- 商品選択メニュー ---
+    stock_info_lines = [f"{k}: {len(v)}枚" for k, v in STOCK.items()]
+    stock_info = "📦 在庫状況\n" + "\n".join(stock_info_lines)
+
+    # 動的にボタンを生成（addproductで増えた商品も表示）
+    buttons = [
+        [InlineKeyboardButton(text=f"{k} ({len(v)}枚)", callback_data=f"type_{k}")]
+        for k, v in STOCK.items()
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await message.answer(
+        "こんにちは！ eSIM半自販機Botです。\nどちらにしますか？\n\n" + stock_info,
+        reply_markup=kb
     )
-    await message.answer(commands_text)
-
-    # --- 商品選択 ---
-    stock_info = f"📦 在庫状況\n通話可能: {len(STOCK['通話可能'])}枚\nデータ: {len(STOCK['データ'])}枚\n"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📞 通話可能 ({len(STOCK['通話可能'])}枚)", callback_data="type_通話可能")],
-        [InlineKeyboardButton(text=f"💾 データ ({len(STOCK['データ'])}枚)", callback_data="type_データ")]
-    ])
-    await message.answer("こんにちは！esim半自販機botです。\nどちらにしますか？\n\n" + stock_info, reply_markup=kb)
-
 
 # === 商品タイプ選択 ===
 @dp.callback_query(F.data.startswith("type_"))
@@ -397,31 +429,40 @@ async def handle_reason_reply(message: types.Message):
 # === /help ===
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
+    """コマンド一覧を表示"""
     if is_admin(message.from_user.id):
         text = (
-           "🧭 コマンド一覧\n\n"
-           "【ユーザー向け】\n"
-           "/start - 購入メニューを開く\n"
-           "/保証 - 保証申請を行う\n"
-           "/問い合わせ - 管理者に直接メッセージを送る\n\n"
-           "【管理者専用】\n"
-           "/addstock <商品名> - 在庫を追加\n"
-           "/addproduct <商品名> - 新商品カテゴリを追加\n"
-           "/stock - 在庫確認\n"
-           "/config - 設定変更（価格・リンク）\n"
-           "/code - 割引コードを発行\n"
-           "/codes - コード一覧表示\n"
-           "/resetcodes - 割引コードをリセット\n"
-           "/backup - データをバックアップ\n"
-           "/restore - バックアップから復元\n"
-           "/restore_auto - 自動バックアップから復元\n"
-           "/broadcast メッセージ - 全ユーザーにお知らせ送信\n"
-           "/reply <ID> <内容> - 問い合わせへの返信\n"
-           "/help - この一覧を表示\n"
+            "🧭 <b>コマンド一覧</b>\n\n"
+            "【🧑‍💻 ユーザー向け】\n"
+            "/start - 購入メニューを開く\n"
+            "/保証 - 保証申請を行う\n"
+            "/問い合わせ - 管理者に直接メッセージを送る\n"
+            "/help - コマンド一覧を表示\n\n"
+            "【👑 管理者専用】\n"
+            "/addstock &lt;商品名&gt; - 在庫を追加\n"
+            "/addproduct &lt;商品名&gt; - 新しい商品カテゴリを追加\n"
+            "/stock - 在庫確認\n"
+            "/config - 設定変更（価格・リンク・割引）\n"
+            "/code &lt;タイプ&gt; - 割引コードを発行（通話可能 / データなど）\n"
+            "/codes - コード一覧を表示\n"
+            "/resetcodes - 割引コードをリセット（未使用に戻す / 全削除）\n"
+            "/backup - データをバックアップ保存\n"
+            "/restore - 手動バックアップから復元\n"
+            "/restore_auto - 自動バックアップから復元\n"
+            "/status - 現在のBotステータス確認\n"
+            "/stats - 販売統計レポートを表示\n"
+            "/history - 直近の購入履歴を表示\n"
+            "/broadcast &lt;内容&gt; - 全ユーザーに一斉通知\n"
+            "/返信 &lt;ユーザーID&gt; &lt;内容&gt; - 問い合わせに返信を送信\n"
+            "/help - このコマンド一覧を再表示\n\n"
+            "📦 例：\n"
+            "　/addstock データ\n"
+            "　/addproduct プリペイドSIM\n"
+            "　/返信 123456789 こんにちは！\n"
         )
     else:
         text = (
-            "🧭 **コマンド一覧（ユーザー用）**\n\n"
+            "🧭 <b>コマンド一覧（ユーザー用）</b>\n\n"
             "/start - 購入メニューを開く\n"
             "/保証 - 保証申請を行う\n"
             "/問い合わせ - 管理者に直接メッセージを送る\n"
