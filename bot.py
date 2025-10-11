@@ -43,23 +43,24 @@ def ensure_data_file():
         return json.load(f)
 
 def load_data():
+    """data.jsonをロードして3値を返す（STOCK, LINKS, CODES）"""
     global STOCK, LINKS, CODES
     try:
         if not os.path.exists(DATA_FILE):
-            return ensure_data_file()
+            ensure_data_file()
 
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # メモリ上に上書き
-        return (
-            data.get("STOCK", {"通話可能": [], "データ": []}),
-            data.get("LINKS", DEFAULT_LINKS),
-            data.get("CODES", {})
-        )
+
+        STOCK = data.get("STOCK", {"通話可能": [], "データ": []})
+        LINKS = data.get("LINKS", DEFAULT_LINKS)
+        CODES = data.get("CODES", {})
+        return STOCK, LINKS, CODES
+
     except Exception as e:
         print(f"⚠️ data.json読み込み失敗: {e}")
-        return {"通話可能": [], "データ": []}, DEFAULT_LINKS, {}
-
+        STOCK, LINKS, CODES = {"通話可能": [], "データ": []}, DEFAULT_LINKS, {}
+        return STOCK, LINKS, CODES
 
 def save_data():
     try:
@@ -165,28 +166,27 @@ async def start_cmd(message: types.Message):
         reply_markup=kb
     )
 
-# --- 商品タイプ選択後（カスタム商品対応版） ---
+# --- 商品タイプ選択後（完全修正版） ---
 @dp.callback_query(F.data.startswith("type_"))
 async def select_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
     type_name = callback.data.split("_", 1)[1]  # "type_通話可能" → "通話可能"
 
-    # ステート更新
-    STATE[uid] = {"stage": "select_count", "type": type_name}
+    # ✅ 他の選択イベントが重複しないようにステート設定
+    STATE[uid] = {"stage": "input_count", "type": type_name}
 
-    # 在庫確認
     stock_len = len(STOCK.get(type_name, []))
     if stock_len == 0:
-        await callback.message.answer(f"⚠️ 現在「{type_name}」の在庫がありません。")
+        await callback.message.answer(f"⚠️ 「{type_name}」は在庫がありません。")
         await callback.answer()
         return
 
-    # 案内送信
     await callback.message.answer(
         f"「{type_name}」を選択しました。\n"
         f"何枚購入しますか？（1〜{min(stock_len, 9)}）"
     )
     await callback.answer()
+    return  # ← これが超重要！
 
 # --- 枚数入力（全商品対応版） ---
 @dp.message(F.text.regexp(r"^\d+$"))
