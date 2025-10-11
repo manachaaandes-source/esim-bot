@@ -923,16 +923,15 @@ async def handle_text_message(message: types.Message):
     if is_admin(uid) and state and state["stage"].startswith("config_"):
         stage = state["stage"]
         target = state["target"]
-        new_value = text
+        new_value = text.strip()
 
         global LINKS
-        if "price" in stage:
+        LINKS.setdefault(target, {"url": "未設定", "price": 0, "discount_link": "未設定", "discount_price": 0})
+
+        # --- 価格変更モード ---
+        if "price" in stage and not "link" in stage:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値のみ入力してください。")
-
-            # 存在しない商品でも安全に初期化
-            if target not in LINKS:
-                LINKS[target] = {"url": "未設定", "price": 0, "discount_link": "未設定", "discount_price": 0}
 
             updated_link = dict(LINKS[target])
             if "discount" in stage:
@@ -945,25 +944,26 @@ async def handle_text_message(message: types.Message):
             LINKS[target] = updated_link
             msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
 
+        # --- リンク変更モード ---
         elif "link" in stage:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ URL形式で入力してください。")
 
-            LINKS.setdefault(target, {})
+            updated_link = dict(LINKS[target])
             if "discount" in stage:
-                LINKS[target]["discount_link"] = new_value
+                updated_link["discount_link"] = new_value
                 kind = "割引リンク"
             else:
-                LINKS[target]["url"] = new_value
+                updated_link["url"] = new_value
                 kind = "通常リンク"
 
+            LINKS[target] = updated_link
             msg = f"🔗 {target} の{kind}を更新しました。"
 
         else:
-            return await message.answer("⚠️ 不明なモードです。")
+            return await message.answer("⚠️ 不明な設定モードです。")
 
         save_data()
-        print(f"[CONFIG UPDATED] {target} {kind} -> {new_value}")
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
         
