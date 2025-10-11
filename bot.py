@@ -967,9 +967,11 @@ async def handle_text_message(message: types.Message):
         STATE.pop(uid, None)
         await message.answer(f"✅ {msg}")
         
-# === 全ユーザー通知機能 ===
+# === 全ユーザー通知・記録・テキスト統合セクション ===
 USERS_FILE = "/app/data/users.json"
 
+
+# --- ユーザー一覧読み込み/保存 ---
 def load_users():
     """ユーザー一覧を読み込む"""
     if os.path.exists(USERS_FILE):
@@ -977,16 +979,121 @@ def load_users():
             return set(json.load(f))
     return set()
 
+
 def save_users():
     """ユーザー一覧を保存する"""
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(list(USERS), f, ensure_ascii=False, indent=2)
 
-# 初期ロード
+
+# --- 初期ロード ---
 USERS = load_users()
 
 
-# === /broadcast ===
+# === ユーザー記録（安全版） ===
+@dp.message(F.text)
+async def track_users(message: types.Message):
+    """
+    全ユーザーを記録（コマンド含む）
+    - /help や /broadcast などのコマンドも登録対象
+    - 問い合わせモード中、または管理者のconfig入力中は除外
+    """
+    if not message.text:
+        return
+
+    uid = message.from_user.id
+
+    # 問い合わせ中は登録しない
+    if STATE.get(uid, {}).get("stage") == "inquiry_waiting":
+        return
+
+    # 管理者の設定入力中（/configなど）はスキップ
+    if is_admin(uid) and STATE.get(uid, {}).get("stage", "").startswith("config_"):
+        return
+
+    # まだ登録されていないユーザーを保存
+    if uid not in USERS:
+        USERS.add(uid)
+        save_users()
+        print(f"👤 新規ユーザー登録: {uid} ({message.from_user.full_name})")
+
+
+# === ユーザー問い合わせ & 管理者設定統合ハンドラ ===
+@dp.message(F.text)
+async def handle_text_message(message: types.Message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    state = STATE.get(uid)
+
+    # コマンドはスルー（/返信だけは通す）
+    if text.startswith("/") and not text.startswith("/返信"):
+        return
+
+    # --- お問い合わせモード ---
+    if state and state.get("stage") == "inquiry_waiting":
+        await bot.send_message(
+            ADMIN_ID,
+            f"📩 新しいお問い合わせ\n👤 {message.from_user.full_name}\n🆔 {uid}\n\n📝 内容:\n{text}"
+        )
+        await message.answer("✅ お問い合わせを送信しました。返信までお待ちください。")
+        STATE.pop(uid, None)
+        return
+
+    # --- 管理者設定モード ---
+    if is_admin(uid) and state and state["stage"].startswith("config_"):
+        stage = state["stage"]
+        target = state["target"]
+        new_value = text.strip()
+
+        global LINKS
+        LINKS.setdefault(target, {
+            "url": "未設定",
+            "price": 0,
+            "discount_link": "未設定",
+            "discount_price": 0
+        })
+
+        # --- 価格変更 ---
+        if "price" in stage and "link" not in stage:
+            if not new_value.isdigit():
+                return await message.answer("⚠️ 数値のみ入力してください。")
+
+            updated_link = dict(LINKS[target])
+            if "discount" in stage:
+                updated_link["discount_price"] = int(new_value)
+                kind = "割引価格"
+            else:
+                updated_link["price"] = int(new_value)
+                kind = "通常価格"
+
+            LINKS[target] = updated_link
+            msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
+
+        # --- リンク変更 ---
+        elif "link" in stage:
+            if not (new_value.startswith("http://") or new_value.startswith("https://")):
+                return await message.answer("⚠️ URL形式で入力してください。")
+
+            updated_link = dict(LINKS[target])
+            if "discount" in stage:
+                updated_link["discount_link"] = new_value
+                kind = "割引リンク"
+            else:
+                updated_link["url"] = new_value
+                kind = "通常リンク"
+
+            LINKS[target] = updated_link
+            msg = f"🔗 {target} の{kind}を更新しました。"
+
+        else:
+            return await message.answer("⚠️ 不明な設定モードです。")
+
+        save_data()
+        STATE.pop(uid, None)
+        await message.answer(f"✅ {msg}")
+
+
+# === /broadcast（管理者向け） ===
 @dp.message(Command("broadcast"))
 async def broadcast(message: types.Message):
     """管理者専用：全ユーザーに一斉通知"""
@@ -1003,7 +1110,7 @@ async def broadcast(message: types.Message):
 
     sent = 0
     failed = 0
-    print(f"📢 broadcast開始: {len(USERS)}人に送信します")
+    print(f"📢 Broadcast開始: {len(USERS)}人に送信します")
 
     for uid in list(USERS):
         try:
@@ -1015,36 +1122,13 @@ async def broadcast(message: types.Message):
             failed += 1
 
     await message.answer(f"✅ 通知送信完了\n成功: {sent}件 / 失敗: {failed}件")
-    return  # ← 他のハンドラに流れないようにする
 
-
-# === ユーザー記録（最後に配置！） ===
-@dp.message(F.text)
-async def track_users(message: types.Message):
-    """
-    全ユーザーを記録（コマンド含む）
-    - /help や /broadcast などのコマンドも登録対象
-    - 問い合わせモード中のユーザーは除外
-    """
-    if not message.text:
-        return
-
-    uid = message.from_user.id
-
-    # 問い合わせ中は登録しない
-    if STATE.get(uid, {}).get("stage") == "inquiry_waiting":
-        return
-
-    # まだ登録されていないユーザーを保存
-    if uid not in USERS:
-        USERS.add(uid)
-        save_users()
-        print(f"👤 新規ユーザー登録: {uid} ({message.from_user.full_name})")
 
 # === 起動 ===
 async def main():
     print("🤖 eSIM自販機Bot 起動中...")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
