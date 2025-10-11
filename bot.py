@@ -642,7 +642,7 @@ async def backup_data(message: types.Message):
     os.makedirs("/app/data/backup", exist_ok=True)
     filename = f"/app/data/backup/data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     shutil.copy(DATA_FILE, filename)
-    await message.answer(f"💾 バックアップ作成完了:\n`{filename}`", parse_mode="Markdown")
+    await message.answer(f"💾 バックアップ作成完了:\n<code>{filename}</code>", parse_mode="HTML")
     
 # === /restore ===
 @dp.message(Command("restore"))
@@ -690,7 +690,7 @@ async def confirm_restore(callback: types.CallbackQuery):
     global STOCK, LINKS, CODES
     STOCK, LINKS, CODES = load_data()
 
-    await callback.message.answer(f"✅ バックアップを復元しました：\n`{filename}`", parse_mode="Markdown")
+    await callback.message.answer(f"✅ バックアップを復元しました：\n<code>{filename}</code>", parse_mode="HTML")
     await callback.answer("復元完了")
 
 # === /restore_auto ===
@@ -779,7 +779,8 @@ async def show_history(message: types.Message):
         + (f" | 🎟️ {p['code']}" if p['code'] else "")
         for p in PURCHASE_LOG[-10:]
     ]
-    await message.answer("🧾 **直近の購入履歴（最大10件）**\n\n" + "\n\n".join(lines), parse_mode="Markdown")
+    await message.answer("🧾 <b>直近の購入履歴（最大10件）</b>\n\n" + "\n\n".join(lines), parse_mode="HTML")
+
 
 # === /問い合わせ ===
 @dp.message(Command("問い合わせ"))
@@ -921,20 +922,28 @@ async def broadcast(message: types.Message):
 
 
 # === ユーザー記録（最後に配置！） ===
-@dp.message(F.text)
+@dp.message(F.text & ~F.text.startswith("/") & ~F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
 async def track_users(message: types.Message):
-    """全ユーザーを記録"""
-    # /で始まるメッセージは除外（コマンド実行時は記録しない）
+    """
+    全ユーザーを記録（通常メッセージのみ）
+    - コマンド（/help, /broadcast など）
+    - 割引コード（RKTN-xxxxxx）
+    - 問い合わせモード中
+    これらは除外
+    """
+    # 安全スキップ条件
     if not message.text:
-        return  # テキストがない（画像・スタンプなど）とき安全スキップ
-    if message.text.startswith("/"):
-        return  # コマンド系はスルー
+        return
 
+    # すでに問い合わせモード中のユーザーは除外
+    if STATE.get(message.from_user.id, {}).get("stage") == "inquiry_waiting":
+        return
+
+    # コマンド以外・問い合わせ以外の普通の発言を記録
     if message.from_user.id not in USERS:
         USERS.add(message.from_user.id)
         save_users()
         print(f"👤 新規ユーザー登録: {message.from_user.id} ({message.from_user.full_name})")
-
 
 # === 起動 ===
 async def main():
