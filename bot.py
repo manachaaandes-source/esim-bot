@@ -671,29 +671,26 @@ async def cfg_select(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# === 設定対象（データ or 通話可能）選択 ===
+# === 設定対象選択（商品別に対応） ===
 @dp.callback_query(F.data.startswith("cfgsel_"))
 async def cfgsel_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    parts = callback.data.split("_")
+    data = callback.data  # 例: cfgsel_discount_price_データ
+    parts = data.split("_", 2)  # ["cfgsel", "discount_price", "データ"] or ["cfgsel", "price", "通話可能"]
 
     if len(parts) < 3:
         await callback.message.answer("⚠️ 無効な設定データを受信しました。")
         await callback.answer()
         return
 
-    if parts[1] == "discount" and len(parts) >= 4:
-        mode = f"discount_{parts[2]}"
-        target = parts[3]
-    else:
-        mode = parts[1]
-        target = parts[2]
+    mode = parts[1]  # discount_price / discount_link / price / link
+    target = parts[2]
 
-    # ✅ 状態を確実に保持（Zeabur対策）
+    # ✅ 正しい状態を保存
     STATE[uid] = {"stage": f"config_{mode}", "target": target}
-    print(f"[CONFIG STATE SET] {uid}: stage=config_{mode}, target={target}")
+    print(f"[CONFIG SET] {uid}: stage=config_{mode}, target={target}")
 
-    # 入力メッセージ
+    # 入力依頼メッセージ
     if "price" in mode:
         await callback.message.answer(f"💴 新しい価格を入力してください。\n対象: {target}")
     elif "link" in mode:
@@ -701,12 +698,10 @@ async def cfgsel_type(callback: types.CallbackQuery):
     else:
         await callback.message.answer("⚠️ 不明な設定モードです。")
 
-    # ✅ 遅延付きで callback.answer() 実行
-    await asyncio.sleep(0.5)
     try:
         await callback.answer()
-    except Exception as e:
-        print(f"[WARN] callback.answer() skipped: {e}")
+    except:
+        pass
 
 # === /backup ===
 @dp.message(Command("backup"))
@@ -901,71 +896,6 @@ async def reply_to_user(message: types.Message):
     except Exception as e:
         await message.answer(f"⚠️ 返信に失敗しました。\nエラー内容: {e}")
         print(f"❌ 返信エラー: {e}")
-
-# === ユーザー問い合わせ & 管理者設定 統合ハンドラ ===
-@dp.message(F.text)
-async def handle_text_message(message: types.Message):
-    uid = message.from_user.id
-    text = message.text.strip()
-    state = STATE.get(uid)
-
-    # お問い合わせモード
-    if state and state.get("stage") == "inquiry_waiting":
-        await bot.send_message(
-            ADMIN_ID,
-            f"📩 新しいお問い合わせ\n👤 {message.from_user.full_name}\n🆔 {uid}\n\n📝 内容:\n{text}"
-        )
-        await message.answer("✅ お問い合わせを送信しました。返信までお待ちください。")
-        STATE.pop(uid, None)
-        return  # ←ここ必須！
-
-    # 管理者設定モード
-    if is_admin(uid) and state and state["stage"].startswith("config_"):
-        stage = state["stage"]
-        target = state["target"]
-        new_value = text.strip()
-
-        global LINKS
-        LINKS.setdefault(target, {"url": "未設定", "price": 0, "discount_link": "未設定", "discount_price": 0})
-
-        # --- 価格変更モード ---
-        if "price" in stage and not "link" in stage:
-            if not new_value.isdigit():
-                return await message.answer("⚠️ 数値のみ入力してください。")
-
-            updated_link = dict(LINKS[target])
-            if "discount" in stage:
-                updated_link["discount_price"] = int(new_value)
-                kind = "割引価格"
-            else:
-                updated_link["price"] = int(new_value)
-                kind = "通常価格"
-
-            LINKS[target] = updated_link
-            msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
-
-        # --- リンク変更モード ---
-        elif "link" in stage:
-            if not (new_value.startswith("http://") or new_value.startswith("https://")):
-                return await message.answer("⚠️ URL形式で入力してください。")
-
-            updated_link = dict(LINKS[target])
-            if "discount" in stage:
-                updated_link["discount_link"] = new_value
-                kind = "割引リンク"
-            else:
-                updated_link["url"] = new_value
-                kind = "通常リンク"
-
-            LINKS[target] = updated_link
-            msg = f"🔗 {target} の{kind}を更新しました。"
-
-        else:
-            return await message.answer("⚠️ 不明な設定モードです。")
-
-        save_data()
-        STATE.pop(uid, None)
-        await message.answer(f"✅ {msg}")
         
 # === 全ユーザー通知・記録・テキスト統合セクション ===
 USERS_FILE = "/app/data/users.json"
@@ -990,46 +920,59 @@ def save_users():
 USERS = load_users()
 
 
-# === ユーザー記録（安全版） ===
+# === テキスト入力統合ハンドラ（管理者設定・問い合わせ・ユーザー記録対応） ===
 @dp.message(F.text)
-async def track_users(message: types.Message):
-    """
-    全ユーザーを記録（コマンド含む）
-    - /help や /broadcast などのコマンドも登録対象
-    - 問い合わせモード中、または管理者のconfig入力中は除外
-    """
-    if not message.text:
-        return
-
-    uid = message.from_user.id
-
-    # 問い合わせ中は登録しない
-    if STATE.get(uid, {}).get("stage") == "inquiry_waiting":
-        return
-
-    # 管理者の設定入力中（/configなど）はスキップ
-    if is_admin(uid) and STATE.get(uid, {}).get("stage", "").startswith("config_"):
-        return
-
-    # まだ登録されていないユーザーを保存
-    if uid not in USERS:
-        USERS.add(uid)
-        save_users()
-        print(f"👤 新規ユーザー登録: {uid} ({message.from_user.full_name})")
-
-
-# === ユーザー問い合わせ & 管理者設定統合ハンドラ ===
-@dp.message(F.text)
-async def handle_text_message(message: types.Message):
+async def handle_text_input(message: types.Message):
     uid = message.from_user.id
     text = message.text.strip()
     state = STATE.get(uid)
 
-    # コマンドはスルー（/返信だけは通す）
-    if text.startswith("/") and not text.startswith("/返信"):
-        return
+    # === 1️⃣ 管理者設定（価格・リンク） ===
+    if is_admin(uid) and state and "config_" in state.get("stage", ""):
+        stage = state["stage"]
+        target = state["target"]
+        new_value = text
 
-    # --- お問い合わせモード ---
+        LINKS.setdefault(target, {
+            "url": "未設定",
+            "price": 0,
+            "discount_link": "未設定",
+            "discount_price": 0
+        })
+
+        # 価格設定モード
+        if "price" in stage and "link" not in stage:
+            if not new_value.isdigit():
+                return await message.answer("⚠️ 数値を入力してください（例: 1500）")
+
+            val = int(new_value)
+            if "discount" in stage:
+                LINKS[target]["discount_price"] = val
+                msg = f"💴 {target} の割引価格を {val} 円に更新しました。"
+            else:
+                LINKS[target]["price"] = val
+                msg = f"💴 {target} の通常価格を {val} 円に更新しました。"
+
+        # リンク設定モード
+        elif "link" in stage:
+            if not (new_value.startswith("http://") or new_value.startswith("https://")):
+                return await message.answer("⚠️ 有効なURLを入力してください。")
+
+            if "discount" in stage:
+                LINKS[target]["discount_link"] = new_value
+                msg = f"🔗 {target} の割引リンクを更新しました。"
+            else:
+                LINKS[target]["url"] = new_value
+                msg = f"🔗 {target} の通常リンクを更新しました。"
+
+        else:
+            return await message.answer("⚠️ 不明な設定モードです。")
+
+        save_data()
+        STATE.pop(uid, None)
+        return await message.answer(f"✅ {msg}")
+
+    # === 2️⃣ お問い合わせモード ===
     if state and state.get("stage") == "inquiry_waiting":
         await bot.send_message(
             ADMIN_ID,
@@ -1039,59 +982,15 @@ async def handle_text_message(message: types.Message):
         STATE.pop(uid, None)
         return
 
-    # --- 管理者設定モード ---
-    if is_admin(uid) and state and state["stage"].startswith("config_"):
-        stage = state["stage"]
-        target = state["target"]
-        new_value = text.strip()
+    # === 3️⃣ 通常メッセージ：ユーザー記録 ===
+    # まだ登録されていないユーザーなら記録
+    if uid not in USERS:
+        USERS.add(uid)
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(USERS), f, ensure_ascii=False, indent=2)
+        print(f"👤 新規ユーザー登録: {uid} ({message.from_user.full_name})")
 
-        global LINKS
-        LINKS.setdefault(target, {
-            "url": "未設定",
-            "price": 0,
-            "discount_link": "未設定",
-            "discount_price": 0
-        })
-
-        # --- 価格変更 ---
-        if "price" in stage and "link" not in stage:
-            if not new_value.isdigit():
-                return await message.answer("⚠️ 数値のみ入力してください。")
-
-            updated_link = dict(LINKS[target])
-            if "discount" in stage:
-                updated_link["discount_price"] = int(new_value)
-                kind = "割引価格"
-            else:
-                updated_link["price"] = int(new_value)
-                kind = "通常価格"
-
-            LINKS[target] = updated_link
-            msg = f"💴 {target} の{kind}を {new_value} 円に更新しました。"
-
-        # --- リンク変更 ---
-        elif "link" in stage:
-            if not (new_value.startswith("http://") or new_value.startswith("https://")):
-                return await message.answer("⚠️ URL形式で入力してください。")
-
-            updated_link = dict(LINKS[target])
-            if "discount" in stage:
-                updated_link["discount_link"] = new_value
-                kind = "割引リンク"
-            else:
-                updated_link["url"] = new_value
-                kind = "通常リンク"
-
-            LINKS[target] = updated_link
-            msg = f"🔗 {target} の{kind}を更新しました。"
-
-        else:
-            return await message.answer("⚠️ 不明な設定モードです。")
-
-        save_data()
-        STATE.pop(uid, None)
-        await message.answer(f"✅ {msg}")
-
+    # それ以外のテキストは無視（エコーしない）
 
 # === /broadcast（管理者向け） ===
 @dp.message(Command("broadcast"))
