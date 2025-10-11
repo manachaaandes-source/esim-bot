@@ -793,22 +793,38 @@ async def inquiry_start(message: types.Message):
 # === /返信 ===
 @dp.message(Command("返信"))
 async def reply_to_user(message: types.Message):
+    """管理者がユーザーに返信するコマンド"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
 
     try:
         parts = message.text.split(maxsplit=2)
         if len(parts) < 3:
-            return await message.answer("使い方: /返信 <ユーザーID> <内容>")
+            return await message.answer("⚙️ 使い方: /返信 <ユーザーID> <内容>\n例: /返信 5397061486 こんにちは！")
 
-        target_id = int(parts[1])
-        reply_text = parts[2]
+        target_id_str = parts[1].strip()
+        reply_text = parts[2].strip()
 
-        await bot.send_message(target_id, f"💬 管理者からの返信:\n{reply_text}")
-        await message.answer("✅ ユーザーに返信を送信しました。")
+        # ✅ 数値チェック
+        if not target_id_str.isdigit():
+            return await message.answer("⚠️ ユーザーIDは数字で指定してください。")
+
+        target_id = int(target_id_str)
+
+        # ✅ 実際に送信
+        await bot.send_message(
+            target_id,
+            f"💬 管理者からの返信:\n\n{reply_text}",
+            parse_mode="HTML"
+        )
+
+        await message.answer(f"✅ ユーザー {target_id} に返信を送信しました。")
+
+        print(f"📩 管理者から {target_id} に返信送信成功: {reply_text}")
 
     except Exception as e:
-        await message.answer(f"⚠️ 返信に失敗しました: {e}")
+        await message.answer(f"⚠️ 返信に失敗しました。\nエラー内容: {e}")
+        print(f"❌ 返信エラー: {e}")
 
 # === ユーザー問い合わせ & 管理者設定 統合ハンドラ ===
 @dp.message(F.text)
@@ -898,7 +914,6 @@ async def broadcast(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
 
-    # /broadcast の後のテキストを取得
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("⚠️ 送信内容を指定してください。\n例: /broadcast メンテナンスのお知らせ")
@@ -909,12 +924,15 @@ async def broadcast(message: types.Message):
 
     sent = 0
     failed = 0
-    for uid in USERS:
+    print(f"📢 broadcast開始: {len(USERS)}人に送信します")
+
+    for uid in list(USERS):
         try:
             await bot.send_message(uid, f"📢 管理者からのお知らせ:\n{content}")
             sent += 1
+            print(f"✅ {uid} に送信成功")
         except Exception as e:
-            print(f"⚠️ ユーザー {uid} への送信失敗: {e}")
+            print(f"⚠️ {uid} に送信失敗: {e}")
             failed += 1
 
     await message.answer(f"✅ 通知送信完了\n成功: {sent}件 / 失敗: {failed}件")
@@ -922,28 +940,27 @@ async def broadcast(message: types.Message):
 
 
 # === ユーザー記録（最後に配置！） ===
-@dp.message(F.text & ~F.text.startswith("/") & ~F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
+@dp.message(F.text)
 async def track_users(message: types.Message):
     """
-    全ユーザーを記録（通常メッセージのみ）
-    - コマンド（/help, /broadcast など）
-    - 割引コード（RKTN-xxxxxx）
-    - 問い合わせモード中
-    これらは除外
+    全ユーザーを記録（コマンド含む）
+    - /help や /broadcast などのコマンドも登録対象
+    - 問い合わせモード中のユーザーは除外
     """
-    # 安全スキップ条件
     if not message.text:
         return
 
-    # すでに問い合わせモード中のユーザーは除外
-    if STATE.get(message.from_user.id, {}).get("stage") == "inquiry_waiting":
+    uid = message.from_user.id
+
+    # 問い合わせ中は登録しない
+    if STATE.get(uid, {}).get("stage") == "inquiry_waiting":
         return
 
-    # コマンド以外・問い合わせ以外の普通の発言を記録
-    if message.from_user.id not in USERS:
-        USERS.add(message.from_user.id)
+    # まだ登録されていないユーザーを保存
+    if uid not in USERS:
+        USERS.add(uid)
         save_users()
-        print(f"👤 新規ユーザー登録: {message.from_user.id} ({message.from_user.full_name})")
+        print(f"👤 新規ユーザー登録: {uid} ({message.from_user.full_name})")
 
 # === 起動 ===
 async def main():
