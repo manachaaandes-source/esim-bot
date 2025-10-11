@@ -394,16 +394,61 @@ async def handle_reason_reply(message: types.Message):
     STATE.pop(message.from_user.id, None)
     STATE.pop(target_id, None)
 
+# === /help ===
+@dp.message(Command("help"))
+async def help_cmd(message: types.Message):
+    if is_admin(message.from_user.id):
+        text = (
+           "🧭 コマンド一覧\n\n"
+           "【ユーザー向け】\n"
+           "/start - 購入メニューを開く\n"
+           "/保証 - 保証申請を行う\n"
+           "/問い合わせ - 管理者に直接メッセージを送る\n\n"
+           "【管理者専用】\n"
+           "/addstock <商品名> - 在庫を追加\n"
+           "/addproduct <商品名> - 新商品カテゴリを追加\n"
+           "/stock - 在庫確認\n"
+           "/config - 設定変更（価格・リンク）\n"
+           "/code - 割引コードを発行\n"
+           "/codes - コード一覧表示\n"
+           "/resetcodes - 割引コードをリセット\n"
+           "/backup - データをバックアップ\n"
+           "/restore - バックアップから復元\n"
+           "/restore_auto - 自動バックアップから復元\n"
+           "/broadcast メッセージ - 全ユーザーにお知らせ送信\n"
+           "/reply <ID> <内容> - 問い合わせへの返信\n"
+           "/help - この一覧を表示\n"
+        )
+    else:
+        text = (
+            "🧭 **コマンド一覧（ユーザー用）**\n\n"
+            "/start - 購入メニューを開く\n"
+            "/保証 - 保証申請を行う\n"
+            "/問い合わせ - 管理者に直接メッセージを送る\n"
+            "/help - コマンド一覧を表示\n\n"
+            "ℹ️ 一部コマンドは管理者専用です。"
+        )
 
-# === 管理者: 在庫追加 ===
+    await message.answer(text, parse_mode="Markdown")
+
+# === /addstock ===
 @dp.message(Command("addstock"))
 async def addstock(message: types.Message):
-    if not is_admin(message.from_user.id): return await message.answer("権限なし")
-    parts = message.text.split()
-    if len(parts) < 2 or parts[1] not in STOCK:
-        return await message.answer("使い方: /addstock 通話可能 or /addstock データ")
-    STATE[message.from_user.id] = {"stage": "adding_stock", "type": parts[1]}
-    await message.answer(f"{parts[1]} の在庫画像を送信してください。")
+    """在庫追加（動的対応版）"""
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        available = " / ".join(STOCK.keys())
+        return await message.answer(f"⚙️ 使い方: /addstock <商品名>\n利用可能カテゴリ: {available}")
+
+    product_type = parts[1].strip()
+    if product_type not in STOCK:
+        return await message.answer(f"⚠️ 『{product_type}』 は存在しません。まず /addproduct で作成してください。")
+
+    STATE[message.from_user.id] = {"stage": "adding_stock", "type": product_type}
+    await message.answer(f"📸 {product_type} の在庫画像を送ってください。")
 
 
 # === /stock ===
@@ -427,6 +472,51 @@ async def create_code(message: types.Message):
     save_data()
     await message.answer(f"🎟️ コード発行完了\n`{code}` ({ctype})", parse_mode="Markdown")
 
+# 🔽🔽🔽 この下に追加 🔽🔽🔽
+# === /addproduct ===
+@dp.message(Command("addproduct"))
+async def add_product(message: types.Message):
+    """新しい商品カテゴリを追加"""
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer("⚙️ 使い方: /addproduct <商品名>\n例: /addproduct プリペイドSIM")
+
+    new_type = parts[1].strip()
+
+    # 既存チェック
+    if new_type in STOCK:
+        return await message.answer(f"⚠️ 「{new_type}」はすでに存在しています。")
+
+    # 新しい商品カテゴリを登録
+    STOCK[new_type] = []
+    LINKS[new_type] = {"url": "未設定", "price": 0}
+    save_data()
+
+    await message.answer(f"✅ 新しい商品カテゴリ「{new_type}」を追加しました。\n"
+                         f"在庫追加は /addstock {new_type} で行えます。")
+
+# === /addstock（改良版） ===
+@dp.message(Command("addstock"))
+async def addstock(message: types.Message):
+    """在庫追加（カスタム商品対応）"""
+    if not is_admin(message.from_user.id):
+        return await message.answer("権限なし")
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        available = " / ".join(STOCK.keys())
+        return await message.answer(f"⚙️ 使い方: /addstock <商品名>\n利用可能カテゴリ: {available}")
+
+    product_type = parts[1].strip()
+    if product_type not in STOCK:
+        return await message.answer(f"⚠️ 『{product_type}』 は存在しません。まず /addproduct で作成してください。")
+
+    STATE[message.from_user.id] = {"stage": "adding_stock", "type": product_type}
+    await message.answer(f"📸 {product_type} の在庫画像を送ってください。")
+# 🔼🔼🔼 ここまでを追加 🔼🔼🔼
 
 # === /codes ===
 @dp.message(Command("codes"))
@@ -691,42 +781,6 @@ async def show_history(message: types.Message):
     ]
     await message.answer("🧾 **直近の購入履歴（最大10件）**\n\n" + "\n\n".join(lines), parse_mode="Markdown")
 
-# === /help ===
-@dp.message(Command("help"))
-async def help_cmd(message: types.Message):
-    if is_admin(message.from_user.id):
-        text = (
-           "🧭 コマンド一覧\n\n"
-           "【ユーザー向け】\n"
-           "/start - 購入メニューを開く\n"
-           "/保証 - 保証申請を行う\n"
-           "/問い合わせ - 管理者に直接メッセージを送る\n\n"
-           "【管理者専用】\n"
-           "/addstock 通話可能|データ - 在庫を追加\n"
-           "/stock - 在庫確認\n"
-           "/config - 設定変更（価格・リンク）\n"
-           "/code - 割引コードを発行\n"
-           "/codes - コード一覧表示\n"
-           "/resetcodes - 割引コードをリセット\n"
-           "/backup - データをバックアップ\n"
-           "/restore - バックアップから復元\n"
-           "/restore_auto - 自動バックアップから復元\n"
-           "/broadcast メッセージ - 全ユーザーにお知らせ送信\n"
-           "/返信 <ID> <内容> - 問い合わせへの返信\n"
-           "/help - この一覧を表示\n"
-        )
-    else:
-        text = (
-            "🧭 **コマンド一覧（ユーザー用）**\n\n"
-            "/start - 購入メニューを開く\n"
-            "/保証 - 保証申請を行う\n"
-            "/問い合わせ - 管理者に直接メッセージを送る\n"
-            "/help - コマンド一覧を表示\n\n"
-            "ℹ️ 一部コマンドは管理者専用です。"
-        )
-
-    await message.answer(text, parse_mode="Markdown")
-
 # === /問い合わせ ===
 @dp.message(Command("問い合わせ"))
 async def inquiry_start(message: types.Message):
@@ -835,30 +889,15 @@ def save_users():
 # 初期ロード
 USERS = load_users()
 
-# === ユーザー記録 ===
-@dp.message(F.text)
-async def track_users(message: types.Message):
-    """全ユーザーを記録"""
-    # /で始まるメッセージは除外（コマンド実行時は記録しない）
-    if not message.text:
-        return  # テキストがない（画像・スタンプなど）とき安全スキップ
-    if message.text.startswith("/"):
-        return
 
-    if message.from_user.id not in USERS:
-        USERS.add(message.from_user.id)
-        save_users()
-        print(f"👤 新規ユーザー登録: {message.from_user.id} ({message.from_user.full_name})")
-
-
-# === 全ユーザーへ一斉通知 ===
+# === /broadcast ===
 @dp.message(Command("broadcast"))
 async def broadcast(message: types.Message):
-    """管理者専用：全ユーザーにお知らせ送信"""
+    """管理者専用：全ユーザーに一斉通知"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
 
-    # /broadcast の後にメッセージがあるか確認
+    # /broadcast の後のテキストを取得
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("⚠️ 送信内容を指定してください。\n例: /broadcast メンテナンスのお知らせ")
@@ -879,6 +918,22 @@ async def broadcast(message: types.Message):
 
     await message.answer(f"✅ 通知送信完了\n成功: {sent}件 / 失敗: {failed}件")
     return  # ← 他のハンドラに流れないようにする
+
+
+# === ユーザー記録（最後に配置！） ===
+@dp.message(F.text)
+async def track_users(message: types.Message):
+    """全ユーザーを記録"""
+    # /で始まるメッセージは除外（コマンド実行時は記録しない）
+    if not message.text:
+        return  # テキストがない（画像・スタンプなど）とき安全スキップ
+    if message.text.startswith("/"):
+        return  # コマンド系はスルー
+
+    if message.from_user.id not in USERS:
+        USERS.add(message.from_user.id)
+        save_users()
+        print(f"👤 新規ユーザー登録: {message.from_user.id} ({message.from_user.full_name})")
 
 
 # === 起動 ===
