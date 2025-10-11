@@ -470,7 +470,7 @@ async def create_code(message: types.Message):
     code = "RKTN-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
     CODES[code] = {"used": False, "type": ctype}
     save_data()
-    await message.answer(f"🎟️ コード発行完了\n`{code}` ({ctype})", parse_mode="Markdown")
+    await message.answer(f"🎟️ コード発行完了\n<code>{code}</code> ({ctype})", parse_mode="HTML")
 
 # 🔽🔽🔽 この下に追加 🔽🔽🔽
 # === /addproduct ===
