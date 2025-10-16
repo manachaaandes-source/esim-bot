@@ -865,7 +865,7 @@ async def create_checkout(callback: types.CallbackQuery):
             pass
 
 # ------ Webhook / 成功/キャンセル エンドポイント ------
-async def stripe_webhook(request: "web.Request"):
+async def stripe_webhook(request):
     try:
         payload = await request.read()
         sig = request.headers.get("Stripe-Signature", "")
@@ -940,10 +940,10 @@ async def stripe_webhook(request: "web.Request"):
         print(f"❌ Webhook処理失敗: {e}")
         return web.Response(status=400, text="bad request")
 
-async def stripe_success(request: "web.Request"):
+async def stripe_success(request):
     return web.Response(text="✅ 決済が完了しました。TelegramにeSIMが届きます。")
 
-async def stripe_cancel(request: "web.Request"):
+async def stripe_cancel(request):
     return web.Response(text="❌ 決済がキャンセルされました。再度お試しください。")
 
 async def start_web_app():
