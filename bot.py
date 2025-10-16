@@ -839,7 +839,7 @@ async def create_checkout(callback: types.CallbackQuery):
                 "price_data": {
                     "currency": "jpy",
                     "product_data": {"name": f"{choice} x{count}"},
-                    "unit_amount": amount * 100
+                    "unit_amount": amount
                 },
                 "quantity": 1
             }],
