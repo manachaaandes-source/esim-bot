@@ -7,13 +7,6 @@ import os
 import random
 import string
 import shutil
-from dotenv import load_dotenv
-load_dotenv()
-import os
-
-bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-
 
 # === 基本設定 ===
 with open("config.json", "r", encoding="utf-8") as f:
@@ -1094,88 +1087,103 @@ async def main():
     print("🤖 eSIM自販機Bot 起動中...")
     await dp.start_polling(bot)
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
 # =====================
-# 🔌 Stripe クレカ決済 & 自動承認 追加
+# 🔌 Stripe クレカ決済 & 自動承認 追加（非破壊的拡張）
 # =====================
-import stripe
-import asyncio
-from aiohttp import web
+try:
+    import stripe
+    from aiohttp import web
+except Exception as _e:
+    # Requirementsに stripe, aiohttp が無い場合のためのヒントをログ出し
+    print("⚠️ stripe / aiohttp が未インストールです。requirements.txt に 'stripe' と 'aiohttp' を追加してください。", _e)
 
-# --- Stripe基本設定（Zeaburでは環境変数を推奨） ---
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", CONFIG.get("STRIPE_SECRET_KEY", ""))
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", CONFIG.get("STRIPE_WEBHOOK_SECRET", ""))
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", CONFIG.get("PUBLIC_BASE_URL", "http://localhost:8080"))  # 例: https://your-app.zeabur.app
+import asyncio as _asyncio
+import os as _os
+import json as _json
 
-if STRIPE_SECRET_KEY:
-    stripe.api_key = STRIPE_SECRET_KEY
-else:
-    print("⚠️ Stripeの秘密鍵(STRIPE_SECRET_KEY)が未設定です。カード決済機能は無効。")
+# --- 既存のCONFIG/ENVからキーを読む（存在しない場合は空でフォールバック） ---
+try:
+    _STRIPE_SECRET_KEY = _os.getenv("STRIPE_SECRET_KEY", CONFIG.get("STRIPE_SECRET_KEY", ""))  # type: ignore
+    _STRIPE_WEBHOOK_SECRET = _os.getenv("STRIPE_WEBHOOK_SECRET", CONFIG.get("STRIPE_WEBHOOK_SECRET", ""))  # type: ignore
+    _PUBLIC_BASE_URL = _os.getenv("PUBLIC_BASE_URL", CONFIG.get("PUBLIC_BASE_URL", "http://localhost:8080"))  # type: ignore
+except NameError:
+    # CONFIG が無い場合でも動作
+    _STRIPE_SECRET_KEY = _os.getenv("STRIPE_SECRET_KEY", "")
+    _STRIPE_WEBHOOK_SECRET = _os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    _PUBLIC_BASE_URL = _os.getenv("PUBLIC_BASE_URL", "http://localhost:8080")
 
-# --- セッション保存（別ファイルで永続化） ---
-SESS_FILE = "/app/data/sessions.json"
+try:
+    if _STRIPE_SECRET_KEY:
+        stripe.api_key = _STRIPE_SECRET_KEY  # type: ignore
+    else:
+        print("⚠️ Stripeの秘密鍵(STRIPE_SECRET_KEY)が未設定です。カード決済機能は無効。")
+except Exception as _e:
+    print("⚠️ stripe 初期化失敗:", _e)
 
-def load_sessions():
+# --- セッション永続化ファイル ---
+_SESS_FILE = "/app/data/sessions.json"
+def _load_sessions():
     try:
-        if os.path.exists(SESS_FILE):
-            with open(SESS_FILE, "r", encoding="utf-8") as f:
+        import os, json
+        if os.path.exists(_SESS_FILE):
+            with open(_SESS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
         print(f"⚠️ セッション読み込み失敗: {e}")
     return {}
-
-def save_sessions():
+def _save_sessions():
     try:
-        with open(SESS_FILE, "w", encoding="utf-8") as f:
+        with open(_SESS_FILE, "w", encoding="utf-8") as f:
             json.dump(SESSIONS, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"⚠️ セッション保存失敗: {e}")
+SESSIONS = _load_sessions()
 
-SESSIONS = load_sessions()
-
-# --- カード決済ボタンを提示 ---
-async def send_card_pay_offer(chat_id: int, choice: str, count: int, amount: int):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="💳 カードで支払う（Stripe）", callback_data=f"ccpay_{choice}_{count}_{amount}")
-    ]])
+# --- カード決済ボタン提示（在庫フローの後に別メッセージで案内：既存コードを改変せずに追加） ---
+async def _send_card_pay_offer(_chat_id: int, _choice: str, _count: int, _amount: int):
     try:
-        await bot.send_message(chat_id, "💳 クレジットカード決済をご希望の方はこちら👇", reply_markup=kb)
-    except Exception as e:
-        print(f"⚠️ send_card_pay_offer error: {e}")
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="💳 カードで支払う（Stripe）", callback_data=f"ccpay_{_choice}_{_count}_{_amount}")
+        ]])
+        await bot.send_message(_chat_id, "💳 クレジットカード決済をご希望の方はこちら👇", reply_markup=kb)  # type: ignore
+    except Exception as _e:
+        print("⚠️ _send_card_pay_offer error:", _e)
 
-# --- 既存の枚数入力後の案内にカード決済案内を追加するため、フック関数を登録 ---
-# 既存コードの handle_count_input の末尾で呼ぶための薄いラッパを定義（後方互換）
-async def __after_count_input_send_card(uid: int):
-    st = STATE.get(uid, {})
-    if not st: return
-    choice = st.get("type")
-    count = st.get("count", 1)
-    amount = st.get("final_price", 0)
-    if choice and count and amount:
-        await send_card_pay_offer(uid, choice, count, amount)
+_SENT_CARD_OFFER = set()
 
-# --- カード決済ボタン押下 → Checkout Session作成 ---
-@dp.callback_query(F.data.startswith("ccpay_"))
-async def create_checkout(callback: types.CallbackQuery):
-    if not STRIPE_SECRET_KEY:
+from aiogram import F as _F, types as _types  # reuse aiogram symbols safely
+
+@dp.message(_F.text.regexp(r"合計金額"))  # 既存フローで金額案内直後にヒット
+async def __maybe_offer_card_pay(message: _types.Message):  # type: ignore
+    try:
+        uid = message.from_user.id
+        st = STATE.get(uid, {})  # type: ignore
+        if st.get("stage") == "waiting_payment" and uid not in _SENT_CARD_OFFER:
+            choice = st.get("type")
+            count = int(st.get("count", 1) or 1)
+            amount = int(st.get("final_price", 0) or 0)
+            if choice and amount:
+                await _send_card_pay_offer(uid, choice, count, amount)
+                _SENT_CARD_OFFER.add(uid)
+    except Exception as _e:
+        print("⚠️ __maybe_offer_card_pay error:", _e)
+
+# --- Stripe Checkout セッション作成 ---
+@dp.callback_query(_F.data.startswith("ccpay_"))
+async def __create_checkout(callback: _types.CallbackQuery):  # type: ignore
+    if not _STRIPE_SECRET_KEY:
         await callback.message.answer("⚠️ カード決済は現在利用できません（設定未完了）。")
         return await callback.answer()
-
     try:
         _, choice, count_str, amount_str = callback.data.split("_", 3)
-        count = int(count_str)
-        amount = int(amount_str)
+        count = int(count_str); amount = int(amount_str)
         uid = callback.from_user.id
 
-        # セッションをStripeに作成（price_dataで動的金額）
-        success_url = f"{PUBLIC_BASE_URL}/stripe/success?session_id={{CHECKOUT_SESSION_ID}}"
-        cancel_url = f"{PUBLIC_BASE_URL}/stripe/cancel"
+        success_url = f"{_PUBLIC_BASE_URL}/stripe/success?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{_PUBLIC_BASE_URL}/stripe/cancel"
 
-        session = stripe.checkout.Session.create(
+        session = stripe.checkout.Session.create(  # type: ignore
             mode="payment",
             success_url=success_url,
             cancel_url=cancel_url,
@@ -1183,7 +1191,7 @@ async def create_checkout(callback: types.CallbackQuery):
                 "price_data": {
                     "currency": "jpy",
                     "product_data": {"name": f"{choice} x{count}"},
-                    "unit_amount": amount * 100,  # JPY円 → センチ（×100）
+                    "unit_amount": amount * 100,
                 },
                 "quantity": 1
             }],
@@ -1191,46 +1199,36 @@ async def create_checkout(callback: types.CallbackQuery):
                 "tg_uid": str(uid),
                 "choice": choice,
                 "count": str(count),
-                "amount": str(amount)
-            }
+                "amount": str(amount),
+            },
         )
 
-        # 紐付けを保存
-        SESSIONS[session.id] = {
-            "uid": uid, "choice": choice, "count": count, "amount": amount
-        }
-        save_sessions()
+        SESSIONS[session.id] = {"uid": uid, "choice": choice, "count": count, "amount": amount}
+        _save_sessions()
 
-        await callback.message.answer(
-            "✅ カード決済ページを開いてお支払いください👇\n" + session.url
-        )
+        await callback.message.answer("✅ カード決済ページを開いてお支払いください👇\n" + session.url)
         await callback.answer()
-
-    except Exception as e:
-        await callback.message.answer(f"⚠️ セッション作成に失敗しました: {e}")
-        try:
-            await callback.answer("エラー")
-        except:
-            pass
+    except Exception as _e:
+        await callback.message.answer(f"⚠️ セッション作成に失敗しました: {_e}")
+        try: await callback.answer("エラー")
+        except: pass
 
 # --- Stripe Webhook: 決済完了で自動承認＆eSIM送付 ---
-async def stripe_webhook(request: web.Request):
+async def __stripe_webhook(request: "web.Request"):  # type: ignore
     try:
         payload = await request.read()
         sig = request.headers.get("Stripe-Signature", "")
-        if STRIPE_WEBHOOK_SECRET:
+        if _STRIPE_WEBHOOK_SECRET:
             try:
-                event = stripe.Webhook.construct_event(
-                    payload=payload, sig_header=sig, secret=STRIPE_WEBHOOK_SECRET
+                event = stripe.Webhook.construct_event(  # type: ignore
+                    payload=payload, sig_header=sig, secret=_STRIPE_WEBHOOK_SECRET
                 )
             except Exception as e:
-                print(f"⚠️ Webhook検証失敗: {e}")
-                return web.Response(status=400, text="Bad signature")
+                print("⚠️ Webhook検証失敗:", e); return web.Response(status=400, text="Bad signature")
         else:
-            # 署名検証なし（テスト用）
-            event = json.loads(payload.decode("utf-8"))
+            event = _json.loads(payload.decode("utf-8"))
 
-        if event["type"] == "checkout.session.completed":
+        if event.get("type") == "checkout.session.completed":
             session = event["data"]["object"]
             session_id = session["id"]
             meta = session.get("metadata", {})
@@ -1239,101 +1237,71 @@ async def stripe_webhook(request: web.Request):
                 "uid": int(meta.get("tg_uid", 0)),
                 "choice": meta.get("choice"),
                 "count": int(meta.get("count", "1")),
-                "amount": int(meta.get("amount", "0"))
+                "amount": int(meta.get("amount", "0")),
             }
 
-            uid = info.get("uid")
-            choice = info.get("choice")
-            count = info.get("count", 1)
-            amount = info.get("amount", 0)
+            uid = info.get("uid"); choice = info.get("choice")
+            count = int(info.get("count", 1) or 1)
+            amount = int(info.get("amount", 0) or 0)
 
             if not uid or not choice:
-                print(f"⚠️ セッション情報不備: {session_id}")
+                print("⚠️ セッション情報不備:", session_id)
                 return web.Response(text="ok")
 
-            # 在庫チェック & 送付
+            # 在庫チェック & 送付（既存のSTOCK/LINKS/NOTICEを利用）
             try:
                 if len(STOCK.get(choice, [])) < count:
-                    await bot.send_message(uid, "⚠️ 決済完了しましたが在庫不足のため、後ほどお送りいたします。")
+                    await bot.send_message(uid, "⚠️ 決済完了しましたが在庫不足のため、後ほどお送りいたします。")  # type: ignore
                 else:
                     for i in range(count):
-                        file_id = STOCK[choice].pop(0)
-                        await bot.send_photo(uid, file_id, caption=f"✅ {choice} #{i+1}/{count} を送信しました！（カード決済）")
-
-                    save_data()
-                    auto_backup()
-                    await bot.send_message(uid, NOTICE)
-
-                    # 取引ログ（管理者名はBot名で代用）
-                    await log_purchase(
-                        uid, "Stripe-Checkout", choice, count, amount, code=None
-                    )
-
+                        file_id = STOCK[choice].pop(0)  # type: ignore
+                        await bot.send_photo(uid, file_id, caption=f"✅ {choice} #{i+1}/{count} を送信しました！（カード決済）")  # type: ignore
+                    save_data(); auto_backup()  # type: ignore
+                    await bot.send_message(uid, NOTICE)  # type: ignore
+                    try:
+                        await log_purchase(uid, "Stripe-Checkout", choice, count, amount, code=None)  # type: ignore
+                    except Exception:
+                        pass
             except Exception as e:
-                print(f"❌ 自動承認・送付エラー: {e}")
+                print("❌ 自動承認・送付エラー:", e)
 
-            # 後片付け
             if session_id in SESSIONS:
-                SESSIONS.pop(session_id, None)
-                save_sessions()
+                SESSIONS.pop(session_id, None); _save_sessions()
 
         return web.Response(text="ok")
-
     except Exception as e:
-        print(f"❌ Webhook処理失敗: {e}")
+        print("❌ Webhook処理失敗:", e)
         return web.Response(status=400, text="bad request")
 
-# --- 成功/キャンセル簡易エンドポイント ---
-async def stripe_success(request: web.Request):
+async def __stripe_success(request: "web.Request"):  # type: ignore
     return web.Response(text="✅ 決済が完了しました。TelegramにeSIMが届きます。")
 
-async def stripe_cancel(request: web.Request):
+async def __stripe_cancel(request: "web.Request"):  # type: ignore
     return web.Response(text="❌ 決済がキャンセルされました。再度お試しください。")
 
-# --- aiohttp アプリ起動（Telegramポーリングと並行実行） ---
-async def start_web_app():
-    app = web.Application()
-    app.router.add_post("/stripe/webhook", stripe_webhook)
-    app.router.add_get("/stripe/success", stripe_success)
-    app.router.add_get("/stripe/cancel", stripe_cancel)
+async def __start_web_app():
+    try:
+        app = web.Application()
+        app.router.add_post("/stripe/webhook", __stripe_webhook)
+        app.router.add_get("/stripe/success", __stripe_success)
+        app.router.add_get("/stripe/cancel", __stripe_cancel)
+        port = int(_os.getenv("PORT", "8080"))
+        runner = web.AppRunner(app); await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port); await site.start()
+        print(f"🌐 Web server started at http://0.0.0.0:{port}")
+    except Exception as e:
+        print("⚠️ Webサーバ起動失敗:", e)
 
-    port = int(os.getenv("PORT", "8080"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Web server started at http://0.0.0.0:{port}")
-
-# --- 既存 main() をラップして並列起動 ---
-orig_main = main
-
-async def main():
-    # 既存のTelegramポーリングと、Webhookサーバを同時起動
+# --- 既存 main() をラップして並列起動（元の if __name__ を置き換える） ---
+_original_main = globals().get("main")
+async def __combined_main():
     print("🚀 Stripe webhook server 起動 & Telegram ポーリング開始")
-    web_task = asyncio.create_task(start_web_app())
-    await orig_main()
+    web_task = _asyncio.create_task(__start_web_app())
+    if callable(_original_main):
+        await _original_main()
     await web_task
 
-# --- hook: handle_count_input の最後でカード決済案内を送る（既存コードに副作用なし） ---
-# 既存関数名はそのまま、末尾で __after_count_input_send_card を呼びたいが、
-# すでに定義済みの handle_count_input を再ラップできないため、
-# Chatフロー上でユーザーが金額表示を受け取った直後にも別メッセージで案内する仕組みを入れる。
-# ⇒ メッセージフィルタで「合計金額:」を含む当Bot送信メッセージに依存しないよう、
-#   handle_count_input自身の末尾を流用するフックは呼び出し側で実行するのが安全。
-#   ここでは /start 以降の通常フローでSTATEが waiting_payment になった直後に案内を送るため、
-#   「完了」ハンドラの直前に STATE を書き換えた後のフックを組み込むのが最も副作用が少ない。
-# ↓ そのため、waiting_payment に遷移させた直後に案内するユーティリティを monkey patch 的に使う。
-# ※ 既存の handle_count_input の最後を変更しないため、
-#   別の message handler を追加して同じユーザーに1回だけ案内を送る。
-SENT_CARD_OFFER = set()
-
-@dp.message(F.text.regexp(r"合計金額:"))
-async def _maybe_offer_card_pay(message: types.Message):
-    uid = message.from_user.id
-    st = STATE.get(uid, {})
-    if st.get("stage") == "waiting_payment" and uid not in SENT_CARD_OFFER:
-        choice = st.get("type")
-        count = st.get("count", 1)
-        amount = st.get("final_price", 0)
-        await send_card_pay_offer(uid, choice, count, amount)
-        SENT_CARD_OFFER.add(uid)
+# ✅ 最後にこれ
+if __name__ == '__main__':
+    import asyncio as _a
+    _a.run(__combined_main())
