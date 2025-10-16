@@ -7,6 +7,13 @@ import os
 import random
 import string
 import shutil
+from dotenv import load_dotenv
+load_dotenv()
+import os
+
+bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+
 
 # === 基本設定 ===
 with open("config.json", "r", encoding="utf-8") as f:
