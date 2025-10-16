@@ -8,31 +8,48 @@ import random
 import string
 import shutil
 
-# === 基本設定 ===
-with open("config.json", "r", encoding="utf-8") as f:
+# =========================
+# 基本設定 / 永続ファイル準備
+# =========================
+CONFIG_PATH = "config.json"
+if not os.path.exists(CONFIG_PATH):
+    raise FileNotFoundError("config.json が見つかりません。Zeabur のリポジトリに含めるか、環境変数で TELEGRAM_TOKEN を設定してください。")
+
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
-bot = Bot(token=CONFIG["TELEGRAM_TOKEN"])
+# 環境変数優先（Zeabur推奨）。無ければ config.json を使う
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", CONFIG.get("TELEGRAM_TOKEN", ""))
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN が未設定です。環境変数または config.json で設定してください。")
+
+bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-ADMIN_ID = 5397061486  # あなたのTelegram ID
-STATE = {}
+ADMIN_ID = 5397061486  # あなたのTelegram ID（依頼者確認済み）
+STATE: dict[int, dict] = {}
 
-# ① 永続化パス
-DATA_FILE = "/app/data/data.json"
+# 永続化パス
+DATA_DIR = "/app/data"
+os.makedirs(DATA_DIR, exist_ok=True)
+DATA_FILE = os.path.join(DATA_DIR, "data.json")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+BACKUP_DIR = os.path.join(DATA_DIR, "backup")
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
 DEFAULT_LINKS = {
     "通話可能": {"url": "https://qr.paypay.ne.jp/p2p01_uMrph5YFDveRCFmw", "price": 3000},
     "データ": {"url": "https://qr.paypay.ne.jp/p2p01_RSC8W9GG2ZcIso1I", "price": 1500},
 }
 
-# === 固定価格設定 ===
+# 固定価格（フォールバック）
 FIXED_PRICES = {
     "データ": {"normal": 1500, "discount": 1250},
     "通話可能": {"normal": 3000, "discount": 2500}
 }
 
 def ensure_data_file():
-    """data.jsonがない場合自動生成"""
+    """data.json がない場合に初期化"""
     if not os.path.exists(DATA_FILE):
         data = {"STOCK": {"通話可能": [], "データ": []}, "LINKS": DEFAULT_LINKS, "CODES": {}}
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -68,23 +85,20 @@ def save_data():
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
             f.flush()
-            os.fsync(f.fileno())  # ← ファイル確実に書き込む
+            os.fsync(f.fileno())
         print("💾 data.json 保存完了 ✅")
-        print(json.dumps(LINKS, ensure_ascii=False, indent=2))
     except Exception as e:
         print(f"⚠️ data保存失敗: {e}")
 
 def auto_backup():
     """在庫減少など重要操作後に自動バックアップ"""
     try:
-        backup_dir = "/app/data/backup"
-        os.makedirs(backup_dir, exist_ok=True)
-
-        for f in os.listdir(backup_dir):
+        # 1つだけ最新の自動バックアップにする（古いもの削除）
+        for f in os.listdir(BACKUP_DIR):
             if f.startswith("data_auto") and f.endswith(".json"):
-                os.remove(os.path.join(backup_dir, f))
+                os.remove(os.path.join(BACKUP_DIR, f))
 
-        backup_path = os.path.join(backup_dir, "data_auto.json")
+        backup_path = os.path.join(BACKUP_DIR, "data_auto.json")
         shutil.copy(DATA_FILE, backup_path)
         print(f"🗂️ 自動バックアップ作成完了: {backup_path}")
     except Exception as e:
@@ -98,16 +112,17 @@ NOTICE = (
     "使用できなかった場合でも、録画がないと保証対象外になります。"
 )
 
-def is_admin(uid): return uid == ADMIN_ID
+def is_admin(uid: int) -> bool:
+    return uid == ADMIN_ID
 
-
-# === /start ===
+# ===============
+# コマンド: /start
+# ===============
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
-    """起動時メニューとコマンド一覧"""
     STATE[message.from_user.id] = {"stage": "select"}
 
-    # --- コマンド一覧 ---
+    # コマンド一覧
     if is_admin(message.from_user.id):
         commands_text = (
             "🧭 <b>コマンド一覧</b>\n\n"
@@ -132,11 +147,7 @@ async def start_cmd(message: types.Message):
             "/history - 直近の購入履歴を表示\n"
             "/broadcast &lt;内容&gt; - 全ユーザーに一斉通知\n"
             "/返信 &lt;ユーザーID&gt; &lt;内容&gt; - 問い合わせに返信を送信\n"
-            "/help - このコマンド一覧を再表示\n\n"
-            "📦 例：\n"
-            "　/addstock データ\n"
-            "　/addproduct プリペイドSIM\n"
-            "　/返信 123456789 こんにちは！\n"
+            "/help - このコマンド一覧を再表示\n"
         )
     else:
         commands_text = (
@@ -150,11 +161,10 @@ async def start_cmd(message: types.Message):
 
     await message.answer(commands_text, parse_mode="HTML")
 
-    # --- 商品選択メニュー ---
+    # 商品選択メニュー
     stock_info_lines = [f"{k}: {len(v)}枚" for k, v in STOCK.items()]
     stock_info = "📦 在庫状況\n" + "\n".join(stock_info_lines)
 
-    # 動的にボタンを生成（addproductで増えた商品も表示）
     buttons = [
         [InlineKeyboardButton(text=f"{k} ({len(v)}枚)", callback_data=f"type_{k}")]
         for k, v in STOCK.items()
@@ -166,13 +176,14 @@ async def start_cmd(message: types.Message):
         reply_markup=kb
     )
 
-# --- 商品タイプ選択後（完全修正版） ---
+# ================================
+# 商品タイプ選択 → 枚数入力ステップ
+# ================================
 @dp.callback_query(F.data.startswith("type_"))
 async def select_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    type_name = callback.data.split("_", 1)[1]  # "type_通話可能" → "通話可能"
+    type_name = callback.data.split("_", 1)[1]
 
-    # ✅ 他の選択イベントが重複しないようにステート設定
     STATE[uid] = {"stage": "input_count", "type": type_name}
 
     stock_len = len(STOCK.get(type_name, []))
@@ -186,51 +197,40 @@ async def select_type(callback: types.CallbackQuery):
         f"何枚購入しますか？（1〜{min(stock_len, 9)}）"
     )
     await callback.answer()
-    return  # ← これが超重要！
 
-# --- 枚数入力（全商品対応版） ---
 @dp.message(F.text.regexp(r"^\d+$"))
 async def handle_count_input(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
     if not state or state.get("stage") not in ["input_count", "select_count"]:
-        return  # 他のステージなら無視
+        return
 
     count = int(message.text.strip())
     choice = state["type"]
 
-    # === 在庫確認 ===
     available_stock = STOCK.get(choice, [])
     if len(available_stock) == 0:
         return await message.answer(f"⚠️ 現在「{choice}」の在庫がありません。")
-
     if count <= 0:
         return await message.answer("⚠️ 1以上の枚数を入力してください。")
     if count > len(available_stock):
         return await message.answer(f"⚠️ 在庫不足です（最大 {len(available_stock)} 枚まで）。")
 
-    # === 価格情報を取得 ===
     link_info = LINKS.get(choice)
     if not link_info:
         return await message.answer(f"⚠️ 「{choice}」のリンク情報が未設定です。\n/config で設定してください。")
 
-    base_price = link_info.get("price", 0)
-    if base_price == 0:
-        base_price = FIXED_PRICES.get(choice, {}).get("normal", 0)  # 古い商品ならここで代替
+    base_price = link_info.get("price", 0) or FIXED_PRICES.get(choice, {}).get("normal", 0)
 
-    # === まとめ買い割引 ===
+    # まとめ買い割引
     discount_rate = 0
     discount_type = None
     if 10 <= count:
-        discount_rate = 0.10
-        discount_type = "10%"
+        discount_rate = 0.10; discount_type = "10%"
     elif 6 <= count <= 9:
-        discount_rate = 0.05
-        discount_type = "5%"
-
+        discount_rate = 0.05; discount_type = "5%"
     total_price = int(base_price * count * (1 - discount_rate))
 
-    # === 状態を更新 ===
     STATE[uid] = {
         "stage": "waiting_payment",
         "type": choice,
@@ -240,9 +240,7 @@ async def handle_count_input(message: types.Message):
         "discount_type": discount_type
     }
 
-    # === メッセージ構築 ===
     msg = f"🧾 {choice} を {count} 枚購入ですね。\n💴 合計金額: {total_price:,} 円"
-
     if discount_type:
         msg += f"\n🎉 まとめ買い割引（{discount_type}OFF）が適用されました。"
     else:
@@ -251,36 +249,33 @@ async def handle_count_input(message: types.Message):
             "⚠️ 2〜5枚の購入時は1枚分のみ割引価格（1250/2500円）になります。"
         )
 
-    # === リンク付与 ===
     pay_url = link_info.get("url") or DEFAULT_LINKS.get(choice, {}).get("url", "未設定")
     msg += f"\n\nこちらのPayPayリンク👇\n{pay_url}\n\n支払い後に『完了』と送ってください。"
 
     await message.answer(msg)
 
-# === 支払い完了報告 ===
+    # 💳 ここでカード決済を提案
+    await _send_card_pay_offer(uid, choice, count, total_price)
+
+# =====================
+# 支払い完了 → スクショ待ち
+# =====================
 @dp.message(F.text.lower().contains("完了"))
 async def handle_done(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
-
     if not state or state.get("stage") != "waiting_payment":
         return await message.answer("⚠️ まず /start から始めてください。")
 
     STATE[uid]["stage"] = "waiting_screenshot"
 
-    # 割引適用表示
     discount_price = state.get("final_price")
-    if discount_price:
-        price_text = f"（支払金額 {discount_price}円）"
-    else:
-        price_text = ""
+    price_text = f"（支払金額 {discount_price}円）" if discount_price else ""
+    await message.answer(f"💴 支払い完了ありがとうございます{price_text}。\nスクリーンショットを送ってください。")
 
-    await message.answer(
-        f"💴 支払い完了ありがとうございます{price_text}。\n"
-        "スクリーンショットを送ってください。"
-    )
-
-# === 割引コード認証（通常割引 + 金額クーポン対応） ===
+# =====================
+# 割引コード認証
+# =====================
 @dp.message(F.text.regexp(r"RKTN-[A-Z0-9]{6}"))
 async def check_code(message: types.Message):
     uid = message.from_user.id
@@ -298,33 +293,24 @@ async def check_code(message: types.Message):
     count = state.get("count", 1)
     code_data = CODES[code]
 
-    # ✅ 対象タイプチェック
     if code_data["type"] != choice:
         return await message.answer("⚠️ このコードは別タイプ用です。")
 
-    # --- 基本価格 ---
     base_price = FIXED_PRICES[choice]["normal"]
     discount_price = FIXED_PRICES[choice]["discount"]
     total_price = base_price * count
 
-    # ✅ 割引タイプ別ロジック
     if "discount_value" in code_data:
-        # 金額OFFクーポン
         off = code_data["discount_value"]
         total_price = max(0, total_price - off)
-        msg = (
-            f"🎟️ クーポンコードが適用されました！\n"
-            f"💸 {off:,}円引き\n"
-            f"💴 支払金額: {total_price:,}円"
-        )
+        msg = f"🎟️ クーポンコードが適用されました！\n💸 {off:,}円引き\n💴 支払金額: {total_price:,}円"
     else:
-        # 既存の通常割引コード
         if count == 1:
             total_price = discount_price
         elif 2 <= count <= 5:
             total_price = discount_price + base_price * (count - 1)
         else:
-            total_price = base_price * count  # 6枚以上はまとめ買い割引優先
+            total_price = base_price * count
         msg = (
             f"🎉 割引コードが承認されました！\n"
             f"⚠️ 2〜5枚購入時は1枚分のみ割引適用です。\n\n"
@@ -332,30 +318,26 @@ async def check_code(message: types.Message):
             f"💴 割引価格: {discount_price}円（1枚目のみ）"
         )
 
-    # --- コード消費・保存 ---
     CODES[code]["used"] = True
     save_data()
 
     STATE[uid]["discount_code"] = code
     STATE[uid]["final_price"] = total_price
 
-    # --- リンク選択 ---
     link_info = LINKS.get(choice, {})
     pay_link = link_info.get("discount_link") or link_info.get("url", "リンク未設定")
 
-    await message.answer(
-        f"{msg}\n\n"
-        f"こちらのリンク👇\n{pay_link}\n\n"
-        "支払い後に『完了』と送ってください。"
-    )
+    await message.answer(f"{msg}\n\nこちらのリンク👇\n{pay_link}\n\n支払い後に『完了』と送ってください。")
 
-# === 支払いスクショ（管理者送信改良版） ===
+# ==========================
+# 支払いスクショ → 管理者へ送信
+# ==========================
 @dp.message(F.photo)
 async def handle_payment_photo(message: types.Message):
     uid = message.from_user.id
     state = STATE.get(uid)
 
-    # --- 在庫追加時 ---
+    # 在庫追加時
     if state and state.get("stage") == "adding_stock":
         choice = state["type"]
         STOCK[choice].append(message.photo[-1].file_id)
@@ -364,7 +346,7 @@ async def handle_payment_photo(message: types.Message):
         STATE.pop(uid, None)
         return
 
-    # --- 支払い確認時 ---
+    # 支払い確認時
     if not state or state.get("stage") != "waiting_screenshot":
         return
 
@@ -384,22 +366,17 @@ async def handle_payment_photo(message: types.Message):
     if discount_code:
         caption += f"\n🎟️ 割引コード: {discount_code}"
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ 承認", callback_data=f"confirm_{uid}"),
-            InlineKeyboardButton(text="❌ 拒否", callback_data=f"deny_{uid}")
-        ]
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ 承認", callback_data=f"confirm_{uid}"),
+        InlineKeyboardButton(text="❌ 拒否", callback_data=f"deny_{uid}")
+    ]])
 
-    await bot.send_photo(
-        ADMIN_ID, message.photo[-1].file_id,
-        caption=caption,
-        reply_markup=kb
-    )
+    await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption, reply_markup=kb)
     await message.answer("🕐 管理者確認中です。")
 
-
-# === 承認 ===
+# ============
+# 手動 承認/拒否
+# ============
 @dp.callback_query(F.data.startswith("confirm_"))
 async def confirm_send(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -410,12 +387,11 @@ async def confirm_send(callback: types.CallbackQuery):
         return await callback.message.answer("⚠️ ユーザーデータなし")
 
     choice = state["type"]
-    if not STOCK[choice]:
+    if not STOCK.get(choice):
         await bot.send_message(target_id, "⚠️ 在庫なし。後ほど送信します。")
         return await callback.answer("在庫なし")
 
     count = state.get("count", 1)
-
     if len(STOCK[choice]) < count:
         await bot.send_message(target_id, f"⚠️ 在庫が不足しています（{len(STOCK[choice])}枚しか残っていません）。")
         return await callback.answer("在庫不足")
@@ -423,24 +399,13 @@ async def confirm_send(callback: types.CallbackQuery):
     for i in range(count):
         file_id = STOCK[choice].pop(0)
         await bot.send_photo(target_id, file_id, caption=f"✅ {choice} #{i+1}/{count} を送信しました！")
+        await log_purchase(target_id, callback.from_user.full_name, choice, state.get("count", 1), state.get("final_price") or LINKS[choice]["price"], state.get("discount_code"))
 
-        await log_purchase(
-            target_id,
-            callback.from_user.full_name,
-            choice,
-            state.get("count", 1),
-            state.get("final_price") or LINKS[choice]["price"],
-            state.get("discount_code")
-        )
-
-    save_data()
-    auto_backup()
+    save_data(); auto_backup()
     await bot.send_message(target_id, NOTICE)
     STATE.pop(target_id, None)
     await callback.answer("完了")
 
-
-# === 拒否 ===
 @dp.callback_query(F.data.startswith("deny_"))
 async def deny_payment(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -450,110 +415,58 @@ async def deny_payment(callback: types.CallbackQuery):
     await callback.message.answer("💬 拒否理由を入力してください。", reply_markup=ForceReply(selective=True))
     await callback.answer("入力待機")
 
-
 @dp.message(F.reply_to_message)
 async def handle_reason_reply(message: types.Message):
     admin_state = STATE.get(message.from_user.id)
-    if not admin_state or admin_state.get("stage") != "awaiting_reason": return
+    if not admin_state or admin_state.get("stage") != "awaiting_reason": 
+        return
     target_id = admin_state["target"]
     reason = message.text.strip()
-    await bot.send_message(target_id, f"⚠️ 支払い確認できませんでした。\n理由：{reason}\n\n再度『完了』と送信してください。")
+    await bot.send_message(target_id, f"⚠️ 支払い確認できませんでした。\n理由：{reason}\n\n再度『完了』と送ってください。")
     await message.answer("❌ 拒否理由送信完了")
     STATE.pop(message.from_user.id, None)
     STATE.pop(target_id, None)
 
-# === /help ===
+# ============
+# 各種ユーティリティ
+# ============
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
-    """コマンド一覧を表示"""
-    if is_admin(message.from_user.id):
-        text = (
-            "🧭 <b>コマンド一覧</b>\n\n"
-            "【🧑‍💻 ユーザー向け】\n"
-            "/start - 購入メニューを開く\n"
-            "/保証 - 保証申請を行う\n"
-            "/問い合わせ - 管理者に直接メッセージを送る\n"
-            "/help - コマンド一覧を表示\n\n"
-            "【👑 管理者専用】\n"
-            "/addstock &lt;商品名&gt; - 在庫を追加\n"
-            "/addproduct &lt;商品名&gt; - 新しい商品カテゴリを追加\n"
-            "/stock - 在庫確認\n"
-            "/config - 設定変更（価格・リンク・割引）\n"
-            "/code &lt;タイプ&gt; - 割引コードを発行（通話可能 / データなど）\n"
-            "/codes - コード一覧を表示\n"
-            "/resetcodes - 割引コードをリセット（未使用に戻す / 全削除）\n"
-            "/backup - データをバックアップ保存\n"
-            "/restore - 手動バックアップから復元\n"
-            "/restore_auto - 自動バックアップから復元\n"
-            "/status - 現在のBotステータス確認\n"
-            "/stats - 販売統計レポートを表示\n"
-            "/history - 直近の購入履歴を表示\n"
-            "/broadcast &lt;内容&gt; - 全ユーザーに一斉通知\n"
-            "/返信 &lt;ユーザーID&gt; &lt;内容&gt; - 問い合わせに返信を送信\n"
-            "/help - このコマンド一覧を再表示\n\n"
-            "📦 例：\n"
-            "　/addstock データ\n"
-            "　/addproduct プリペイドSIM\n"
-            "　/返信 123456789 こんにちは！\n"
-        )
-    else:
-        text = (
-            "🧭 <b>コマンド一覧（ユーザー用）</b>\n\n"
-            "/start - 購入メニューを開く\n"
-            "/保証 - 保証申請を行う\n"
-            "/問い合わせ - 管理者に直接メッセージを送る\n"
-            "/help - コマンド一覧を表示\n\n"
-            "ℹ️ 一部コマンドは管理者専用です。"
-        )
+    await start_cmd(message)
 
-    await message.answer(text, parse_mode="HTML")
-
-# === /addstock ===
 @dp.message(Command("addstock"))
 async def addstock(message: types.Message):
-    """在庫追加（動的対応版）"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         available = " / ".join(STOCK.keys())
         return await message.answer(f"⚙️ 使い方: /addstock <商品名>\n利用可能カテゴリ: {available}")
-
     product_type = parts[1].strip()
     if product_type not in STOCK:
         return await message.answer(f"⚠️ 『{product_type}』 は存在しません。まず /addproduct で作成してください。")
-
     STATE[message.from_user.id] = {"stage": "adding_stock", "type": product_type}
     await message.answer(f"📸 {product_type} の在庫画像を送ってください。")
 
-
-# === /stock ===
 @dp.message(Command("stock"))
 async def stock_cmd(message: types.Message):
-    if not is_admin(message.from_user.id): return await message.answer("権限なし")
+    if not is_admin(message.from_user.id): 
+        return await message.answer("権限なし")
     info = "\n".join([f"{k}: {len(v)}枚" for k, v in STOCK.items()])
     await message.answer(f"📦 在庫状況\n{info}")
 
-# === /code（割引金額対応版） ===
 @dp.message(Command("code"))
 async def create_code(message: types.Message):
-    """割引コードを発行（タイプ or 金額付き対応）"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
     parts = message.text.split()
     if len(parts) < 2:
-        return await message.answer("⚙️ 使い方:\n"
-                                    "/code 通話可能\n"
-                                    "/code データ\n"
-                                    "/code 通話可能 1500円off")
+        return await message.answer("⚙️ 使い方:\n/code 通話可能\n/code データ\n/code 通話可能 1500円off")
 
     ctype = parts[1]
     if ctype not in STOCK:
         return await message.answer(f"⚠️ 『{ctype}』 は存在しません。")
 
-    # --- 割引金額の指定を確認 ---
     discount_value = None
     if len(parts) >= 3:
         raw = parts[2].replace("円", "").replace("OFF", "").replace("off", "")
@@ -562,47 +475,28 @@ async def create_code(message: types.Message):
         else:
             return await message.answer("⚠️ 金額指定は『1500円off』のように入力してください。")
 
-    # --- コード生成 ---
     code = "RKTN-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-
-    # --- 登録内容を分岐 ---
     if discount_value:
         CODES[code] = {"used": False, "type": ctype, "discount_value": discount_value}
         msg = f"🎟️ 金額クーポン発行完了\n<code>{code}</code>\n対象: {ctype}\n💴 割引額: {discount_value:,}円OFF"
     else:
         CODES[code] = {"used": False, "type": ctype}
         msg = f"🎟️ 通常割引コード発行\n<code>{code}</code>\n対象: {ctype}"
-
     save_data()
     await message.answer(msg, parse_mode="HTML")
 
-# 🔽🔽🔽 この下に追加 🔽🔽🔽
-# === /addproduct（修正版） ===
 @dp.message(Command("addproduct"))
 async def add_product(message: types.Message):
-    """新しい商品カテゴリを追加（在庫・リンク・価格を自動登録）"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         return await message.answer("⚙️ 使い方: /addproduct <商品名>\n例: /addproduct 1日eSIM（500MB）")
-
     new_type = parts[1].strip()
-
-    # 既に存在している場合
     if new_type in STOCK or new_type in LINKS:
         return await message.answer(f"⚠️ 「{new_type}」はすでに登録済みです。")
-
-    # 在庫とリンクデータを新規作成
     STOCK[new_type] = []
-    LINKS[new_type] = {
-        "url": "未設定",
-        "price": 0,
-        "discount_link": "未設定",
-        "discount_price": 0
-    }
-
+    LINKS[new_type] = {"url": "未設定", "price": 0, "discount_link": "未設定", "discount_price": 0}
     save_data()
     await message.answer(
         f"✅ 新しい商品カテゴリ「{new_type}」を追加しました。\n"
@@ -614,34 +508,12 @@ async def add_product(message: types.Message):
         f"📸 在庫を追加するには：\n/addstock {new_type}"
     )
 
-# === /addstock（改良版） ===
-@dp.message(Command("addstock"))
-async def addstock(message: types.Message):
-    """在庫追加（カスタム商品対応）"""
-    if not is_admin(message.from_user.id):
-        return await message.answer("権限なし")
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        available = " / ".join(STOCK.keys())
-        return await message.answer(f"⚙️ 使い方: /addstock <商品名>\n利用可能カテゴリ: {available}")
-
-    product_type = parts[1].strip()
-    if product_type not in STOCK:
-        return await message.answer(f"⚠️ 『{product_type}』 は存在しません。まず /addproduct で作成してください。")
-
-    STATE[message.from_user.id] = {"stage": "adding_stock", "type": product_type}
-    await message.answer(f"📸 {product_type} の在庫画像を送ってください。")
-# 🔼🔼🔼 ここまでを追加 🔼🔼🔼
-
-# === /codes ===
 @dp.message(Command("codes"))
 async def list_codes(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
     if not CODES:
         return await message.answer("コードなし")
-
     lines = []
     for k, v in CODES.items():
         status = "✅使用済" if v["used"] else "🟢未使用"
@@ -649,21 +521,17 @@ async def list_codes(message: types.Message):
             lines.append(f"{k} | {v['type']} | 💴{v['discount_value']}円OFF | {status}")
         else:
             lines.append(f"{k} | {v['type']} | 通常割引 | {status}")
-
     await message.answer("🎟️ コード一覧\n" + "\n".join(lines))
 
-# === /resetcodes ===
 @dp.message(Command("resetcodes"))
 async def reset_codes(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🟢 使用状態リセット（未使用に戻す）", callback_data="reset_unused")],
         [InlineKeyboardButton(text="🔴 全削除", callback_data="reset_delete")]
     ])
     await message.answer("🎟️ 割引コードのリセット方法を選んでください：", reply_markup=kb)
-
 
 @dp.callback_query(F.data == "reset_unused")
 async def reset_unused(callback: types.CallbackQuery):
@@ -675,7 +543,6 @@ async def reset_unused(callback: types.CallbackQuery):
     await callback.message.answer("✅ すべてのコードを『未使用』状態に戻しました。")
     await callback.answer()
 
-
 @dp.callback_query(F.data == "reset_delete")
 async def reset_delete(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -685,13 +552,10 @@ async def reset_delete(callback: types.CallbackQuery):
     await callback.message.answer("🗑️ すべての割引コードを削除しました。")
     await callback.answer()
 
-# === /config ===
 @dp.message(Command("config"))
 async def config_menu(message: types.Message):
-    """設定メニュー（管理者専用）"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし。")
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💴 価格変更", callback_data="cfg_price")],
         [InlineKeyboardButton(text="💸 割引価格設定", callback_data="cfg_discount_price")],
@@ -700,330 +564,192 @@ async def config_menu(message: types.Message):
     ])
     await message.answer("⚙️ どの設定を変更しますか？", reply_markup=kb)
 
-
-# === 設定カテゴリ選択（全商品を動的に表示） ===
 @dp.callback_query(F.data.startswith("cfg_"))
 async def cfg_select(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    mode = callback.data.split("_", 1)[1]  # 例: price, discount_price, link, discount_link
-
-    # 表示ラベルを設定
-    if "link" in mode:
-        label = "リンク"
-    elif "price" in mode:
-        label = "価格"
-    else:
-        label = "設定"
-
-    # === 動的に商品ボタン生成 ===
+    mode = callback.data.split("_", 1)[1]
+    label = "リンク" if "link" in mode else ("価格" if "price" in mode else "設定")
     if not LINKS:
         return await callback.message.answer("⚠️ 商品データが存在しません。")
-
-    buttons = [
-        [InlineKeyboardButton(text=f"{name}", callback_data=f"cfgsel_{mode}_{name}")]
-        for name in LINKS.keys()
-    ]
-
+    buttons = [[InlineKeyboardButton(text=f"{name}", callback_data=f"cfgsel_{mode}_{name}")] for name in LINKS.keys()]
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
     await callback.message.answer(f"🛠 どの商品カテゴリの{label}を変更しますか？", reply_markup=kb)
     await callback.answer()
 
-
-# === 設定対象選択（商品別に対応） ===
 @dp.callback_query(F.data.startswith("cfgsel_"))
 async def cfgsel_type(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    data = callback.data  # 例: cfgsel_discount_price_データ
-    parts = data.split("_", 2)  # ["cfgsel", "discount_price", "データ"] or ["cfgsel", "price", "通話可能"]
-
+    data = callback.data
+    parts = data.split("_", 2)
     if len(parts) < 3:
         await callback.message.answer("⚠️ 無効な設定データを受信しました。")
         await callback.answer()
         return
-
-    mode = parts[1]  # discount_price / discount_link / price / link
-    target = parts[2]
-
-    # ✅ 正しい状態を保存
+    mode, target = parts[1], parts[2]
     STATE[uid] = {"stage": f"config_{mode}", "target": target}
-    print(f"[CONFIG SET] {uid}: stage=config_{mode}, target={target}")
-
-    # 入力依頼メッセージ
     if "price" in mode:
         await callback.message.answer(f"💴 新しい価格を入力してください。\n対象: {target}")
     elif "link" in mode:
         await callback.message.answer(f"🔗 新しいリンク(URL)を入力してください。\n対象: {target}")
     else:
         await callback.message.answer("⚠️ 不明な設定モードです。")
-
     try:
         await callback.answer()
     except:
         pass
 
-# === /backup ===
 @dp.message(Command("backup"))
 async def backup_data(message: types.Message):
-    if not is_admin(message.from_user.id): 
+    if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
-    import shutil, datetime
-    os.makedirs("/app/data/backup", exist_ok=True)
-    filename = f"/app/data/backup/data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    import datetime
+    filename = os.path.join(BACKUP_DIR, f"data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
     shutil.copy(DATA_FILE, filename)
     await message.answer(f"💾 バックアップ作成完了:\n<code>{filename}</code>", parse_mode="HTML")
-    
-# === /restore ===
+
 @dp.message(Command("restore"))
 async def restore_backup(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
-    backup_dir = "/app/data/backup"
-    if not os.path.exists(backup_dir):
-        return await message.answer("⚠️ バックアップフォルダが存在しません。")
-
-    files = sorted(
-        [f for f in os.listdir(backup_dir) if f.startswith("data_") and f.endswith(".json")],
-        reverse=True
-    )
-
+    files = sorted([f for f in os.listdir(BACKUP_DIR) if f.startswith("data_") and f.endswith(".json")], reverse=True)
     if not files:
         return await message.answer("⚠️ バックアップファイルがありません。")
-
-    # 最新5件を表示
     recent_files = files[:5]
-    buttons = [
-        [InlineKeyboardButton(text=f.replace('data_', '').replace('.json', ''), callback_data=f"restore_{f}")]
-        for f in recent_files
-    ]
+    buttons = [[InlineKeyboardButton(text=f.replace('data_', '').replace('.json', ''), callback_data=f"restore_{f}")] for f in recent_files]
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await message.answer("📂 復元したいバックアップを選んでください：", reply_markup=kb)
-
 
 @dp.callback_query(F.data.startswith("restore_"))
 async def confirm_restore(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return await callback.answer("権限なし", show_alert=True)
-
     filename = callback.data.replace("restore_", "")
-    backup_path = os.path.join("/app/data/backup", filename)
-
+    backup_path = os.path.join(BACKUP_DIR, filename)
     if not os.path.exists(backup_path):
         return await callback.message.answer("⚠️ 指定されたバックアップが見つかりません。")
-
-    # 復元処理
-    import shutil
     shutil.copy(backup_path, DATA_FILE)
-
     global STOCK, LINKS, CODES
     STOCK, LINKS, CODES = load_data()
-
     await callback.message.answer(f"✅ バックアップを復元しました：\n<code>{filename}</code>", parse_mode="HTML")
     await callback.answer("復元完了")
 
-# === /restore_auto ===
 @dp.message(Command("restore_auto"))
 async def restore_auto_backup(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
-    backup_path = "/app/data/backup/data_auto.json"
+    backup_path = os.path.join(BACKUP_DIR, "data_auto.json")
     if not os.path.exists(backup_path):
         return await message.answer("⚠️ 自動バックアップが見つかりません。")
-
-    import shutil
     shutil.copy(backup_path, DATA_FILE)
-
     global STOCK, LINKS, CODES
     STOCK, LINKS, CODES = load_data()
-
     await message.answer("✅ 自動バックアップを復元しました。")
 
-# === /status ===
 @dp.message(Command("status"))
 async def status_cmd(message: types.Message):
     if not is_admin(message.from_user.id): 
         return await message.answer("権限なし")
     info = (
         f"📊 Botステータス\n"
-        f"在庫: 通話可能={len(STOCK['通話可能'])} / データ={len(STOCK['データ'])}\n"
+        f"在庫: 通話可能={len(STOCK.get('通話可能', []))} / データ={len(STOCK.get('データ', []))}\n"
         f"割引コード数: {len(CODES)}\n"
         f"保存先: {DATA_FILE}\n"
         f"稼働中: ✅ 正常"
     )
     await message.answer(info)
 
-# === /stats ===
 @dp.message(Command("stats"))
 async def stats_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
-    total_sales = 0
     total_codes_used = sum(1 for v in CODES.values() if v["used"])
-    total_stock = sum(len(v) for v in STOCK.values())
-
-    # 売上合計計算
-    for t, data in LINKS.items():
-        price = data.get("price", 0)
-        total_items = len(DEFAULT_LINKS[t]["url"]) if t in DEFAULT_LINKS else 0
-        sold_count = max(0, total_items - len(STOCK[t]))
-        total_sales += sold_count * price
-
     text = (
         f"📊 **販売統計レポート**\n\n"
-        f"💴 推定総売上: {total_sales:,}円\n"
         f"🎟️ 使用済み割引コード: {total_codes_used}件\n"
         f"📦 在庫残数:\n"
-        f"　📞 通話可能: {len(STOCK['通話可能'])}枚\n"
-        f"　💾 データ: {len(STOCK['データ'])}枚\n"
+        f"　📞 通話可能: {len(STOCK.get('通話可能', []))}枚\n"
+        f"　💾 データ: {len(STOCK.get('データ', []))}枚\n"
     )
     await message.answer(text, parse_mode="HTML")
 
-
-# === /history ===
 PURCHASE_LOG = []
-
 async def log_purchase(uid, username, choice, count, price, code=None):
-    PURCHASE_LOG.append({
-        "uid": uid,
-        "name": username,
-        "type": choice,
-        "count": count,
-        "price": price,
-        "code": code,
-    })
+    PURCHASE_LOG.append({"uid": uid, "name": username, "type": choice, "count": count, "price": price, "code": code})
 
 @dp.message(Command("history"))
 async def show_history(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
     if not PURCHASE_LOG:
         return await message.answer("📄 購入履歴はまだありません。")
-
     lines = [
-        f"👤 {p['name']} ({p['uid']})\n📦 {p['type']} x{p['count']}枚 | 💴 {p['price']}円"
-        + (f" | 🎟️ {p['code']}" if p['code'] else "")
+        f"👤 {p['name']} ({p['uid']})\n📦 {p['type']} x{p['count']}枚 | 💴 {p['price']}円" + (f" | 🎟️ {p['code']}" if p['code'] else "")
         for p in PURCHASE_LOG[-10:]
     ]
     await message.answer("🧾 <b>直近の購入履歴（最大10件）</b>\n\n" + "\n\n".join(lines), parse_mode="HTML")
 
-
-# === /問い合わせ ===
 @dp.message(Command("問い合わせ"))
 async def inquiry_start(message: types.Message):
     STATE[message.from_user.id] = {"stage": "inquiry_waiting"}
     await message.answer("💬 お問い合わせ内容を入力してください。\n（送信後、管理者に転送されます）")
 
-# ⬇⬇⬇ ここに追加 ⬇⬇⬇
-
-# === /返信 ===
 @dp.message(Command("返信"))
 async def reply_to_user(message: types.Message):
-    """管理者がユーザーに返信するコマンド"""
     if not is_admin(message.from_user.id):
         return await message.answer("権限なし")
-
     try:
         parts = message.text.split(maxsplit=2)
         if len(parts) < 3:
             return await message.answer("⚙️ 使い方: /返信 <ユーザーID> <内容>\n例: /返信 5397061486 こんにちは！")
-
         target_id_str = parts[1].strip()
         reply_text = parts[2].strip()
-
-        # ✅ 数値チェック
         if not target_id_str.isdigit():
             return await message.answer("⚠️ ユーザーIDは数字で指定してください。")
-
         target_id = int(target_id_str)
-
-        # ✅ 実際に送信
-        await bot.send_message(
-            target_id,
-            f"💬 管理者からの返信:\n\n{reply_text}",
-            parse_mode="HTML"
-        )
-
+        await bot.send_message(target_id, f"💬 管理者からのお知らせ:\n\n{reply_text}", parse_mode="HTML")
         await message.answer(f"✅ ユーザー {target_id} に返信を送信しました。")
-
-        print(f"📩 管理者から {target_id} に返信送信成功: {reply_text}")
-
     except Exception as e:
         await message.answer(f"⚠️ 返信に失敗しました。\nエラー内容: {e}")
-        print(f"❌ 返信エラー: {e}")
-        
-# === 全ユーザー通知・記録・テキスト統合セクション ===
-USERS_FILE = "/app/data/users.json"
 
-
-# --- ユーザー一覧読み込み/保存 ---
+# ユーザー記録 & 設定入力
 def load_users():
-    """ユーザー一覧を読み込む"""
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r", encoding="utf-8") as f:
             return set(json.load(f))
     return set()
 
-
-def save_users():
-    """ユーザー一覧を保存する"""
+def save_users(users):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(USERS), f, ensure_ascii=False, indent=2)
+        json.dump(list(users), f, ensure_ascii=False, indent=2)
 
-
-# --- 初期ロード ---
 USERS = load_users()
 
-
-# === テキスト入力統合ハンドラ（管理者設定・問い合わせ・ユーザー記録対応） ===
 @dp.message(F.text)
 async def handle_text_input(message: types.Message):
     uid = message.from_user.id
     text = message.text.strip()
     state = STATE.get(uid)
 
-    # === 1️⃣ 管理者設定（価格・リンク） ===
+    # 管理者設定（価格/リンク）
     if is_admin(uid) and state and "config_" in state.get("stage", ""):
-        stage = state["stage"]
-        target = state["target"]
-        new_value = text
+        stage = state["stage"]; target = state["target"]; new_value = text
+        LINKS.setdefault(target, {"url": "未設定", "price": 0, "discount_link": "未設定", "discount_price": 0})
 
-        LINKS.setdefault(target, {
-            "url": "未設定",
-            "price": 0,
-            "discount_link": "未設定",
-            "discount_price": 0
-        })
-
-        # 価格設定モード
         if "price" in stage and "link" not in stage:
             if not new_value.isdigit():
                 return await message.answer("⚠️ 数値を入力してください（例: 1500）")
-
             val = int(new_value)
             if "discount" in stage:
-                LINKS[target]["discount_price"] = val
-                msg = f"💴 {target} の割引価格を {val} 円に更新しました。"
+                LINKS[target]["discount_price"] = val; msg = f"💴 {target} の割引価格を {val} 円に更新しました。"
             else:
-                LINKS[target]["price"] = val
-                msg = f"💴 {target} の通常価格を {val} 円に更新しました。"
-
-        # リンク設定モード
+                LINKS[target]["price"] = val; msg = f"💴 {target} の通常価格を {val} 円に更新しました。"
         elif "link" in stage:
             if not (new_value.startswith("http://") or new_value.startswith("https://")):
                 return await message.answer("⚠️ 有効なURLを入力してください。")
-
             if "discount" in stage:
-                LINKS[target]["discount_link"] = new_value
-                msg = f"🔗 {target} の割引リンクを更新しました。"
+                LINKS[target]["discount_link"] = new_value; msg = f"🔗 {target} の割引リンクを更新しました。"
             else:
-                LINKS[target]["url"] = new_value
-                msg = f"🔗 {target} の通常リンクを更新しました。"
-
+                LINKS[target]["url"] = new_value; msg = f"🔗 {target} の通常リンクを更新しました。"
         else:
             return await message.answer("⚠️ 不明な設定モードです。")
 
@@ -1031,159 +757,81 @@ async def handle_text_input(message: types.Message):
         STATE.pop(uid, None)
         return await message.answer(f"✅ {msg}")
 
-    # === 2️⃣ お問い合わせモード ===
     if state and state.get("stage") == "inquiry_waiting":
-        await bot.send_message(
-            ADMIN_ID,
-            f"📩 新しいお問い合わせ\n👤 {message.from_user.full_name}\n🆔 {uid}\n\n📝 内容:\n{text}"
-        )
+        await bot.send_message(ADMIN_ID, f"📩 新しいお問い合わせ\n👤 {message.from_user.full_name}\n🆔 {uid}\n\n📝 内容:\n{text}")
         await message.answer("✅ お問い合わせを送信しました。返信までお待ちください。")
         STATE.pop(uid, None)
         return
 
-    # === 3️⃣ 通常メッセージ：ユーザー記録 ===
-    # まだ登録されていないユーザーなら記録
+    # ユーザー登録
     if uid not in USERS:
-        USERS.add(uid)
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(USERS), f, ensure_ascii=False, indent=2)
+        USERS.add(uid); save_users(USERS)
         print(f"👤 新規ユーザー登録: {uid} ({message.from_user.full_name})")
 
-    # それ以外のテキストは無視（エコーしない）
-
-# === /broadcast（管理者向け） ===
-@dp.message(Command("broadcast"))
-async def broadcast(message: types.Message):
-    """管理者専用：全ユーザーに一斉通知"""
-    if not is_admin(message.from_user.id):
-        return await message.answer("権限なし")
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await message.answer("⚠️ 送信内容を指定してください。\n例: /broadcast メンテナンスのお知らせ")
-
-    content = parts[1].strip()
-    if not content:
-        return await message.answer("⚠️ 内容が空です。")
-
-    sent = 0
-    failed = 0
-    print(f"📢 Broadcast開始: {len(USERS)}人に送信します")
-
-    for uid in list(USERS):
-        try:
-            await bot.send_message(uid, f"📢 管理者からのお知らせ:\n{content}")
-            sent += 1
-            print(f"✅ {uid} に送信成功")
-        except Exception as e:
-            print(f"⚠️ {uid} に送信失敗: {e}")
-            failed += 1
-
-    await message.answer(f"✅ 通知送信完了\n成功: {sent}件 / 失敗: {failed}件")
-
-
-# === 起動 ===
-async def main():
-    print("🤖 eSIM自販機Bot 起動中...")
-    await dp.start_polling(bot)
-
-# =====================
-# 🔌 Stripe クレカ決済 & 自動承認 追加（非破壊的拡張）
-# =====================
+# =========================
+# 💳 Stripe Checkout 連携
+# =========================
 try:
     import stripe
     from aiohttp import web
-except Exception as _e:
-    # Requirementsに stripe, aiohttp が無い場合のためのヒントをログ出し
-    print("⚠️ stripe / aiohttp が未インストールです。requirements.txt に 'stripe' と 'aiohttp' を追加してください。", _e)
+except Exception as e:
+    print("⚠️ stripe / aiohttp が未インストールです。requirements.txt に 'stripe' と 'aiohttp' を追加してください。", e)
+    stripe = None
+    web = None
 
-import asyncio as _asyncio
-import os as _os
-import json as _json
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", CONFIG.get("STRIPE_SECRET_KEY", ""))
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", CONFIG.get("STRIPE_WEBHOOK_SECRET", ""))
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", CONFIG.get("PUBLIC_BASE_URL", "https://esim.zeabur.app"))
 
-# --- 既存のCONFIG/ENVからキーを読む（存在しない場合は空でフォールバック） ---
-try:
-    _STRIPE_SECRET_KEY = _os.getenv("STRIPE_SECRET_KEY", CONFIG.get("STRIPE_SECRET_KEY", ""))  # type: ignore
-    _STRIPE_WEBHOOK_SECRET = _os.getenv("STRIPE_WEBHOOK_SECRET", CONFIG.get("STRIPE_WEBHOOK_SECRET", ""))  # type: ignore
-    _PUBLIC_BASE_URL = _os.getenv("PUBLIC_BASE_URL", CONFIG.get("PUBLIC_BASE_URL", "http://localhost:8080"))  # type: ignore
-except NameError:
-    # CONFIG が無い場合でも動作
-    _STRIPE_SECRET_KEY = _os.getenv("STRIPE_SECRET_KEY", "")
-    _STRIPE_WEBHOOK_SECRET = _os.getenv("STRIPE_WEBHOOK_SECRET", "")
-    _PUBLIC_BASE_URL = _os.getenv("PUBLIC_BASE_URL", "http://localhost:8080")
+if stripe and STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
+else:
+    print("⚠️ Stripeの秘密鍵(STRIPE_SECRET_KEY)が未設定です。カード決済機能は無効。")
 
-try:
-    if _STRIPE_SECRET_KEY:
-        stripe.api_key = _STRIPE_SECRET_KEY  # type: ignore
-    else:
-        print("⚠️ Stripeの秘密鍵(STRIPE_SECRET_KEY)が未設定です。カード決済機能は無効。")
-except Exception as _e:
-    print("⚠️ stripe 初期化失敗:", _e)
-
-# --- セッション永続化ファイル ---
-_SESS_FILE = "/app/data/sessions.json"
-def _load_sessions():
+SESS_FILE = os.path.join(DATA_DIR, "sessions.json")
+def load_sessions():
     try:
-        import os, json
-        if os.path.exists(_SESS_FILE):
-            with open(_SESS_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(SESS_FILE):
+            with open(SESS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
         print(f"⚠️ セッション読み込み失敗: {e}")
     return {}
-def _save_sessions():
+
+def save_sessions():
     try:
-        with open(_SESS_FILE, "w", encoding="utf-8") as f:
+        with open(SESS_FILE, "w", encoding="utf-8") as f:
             json.dump(SESSIONS, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"⚠️ セッション保存失敗: {e}")
-SESSIONS = _load_sessions()
 
-# --- カード決済ボタン提示（在庫フローの後に別メッセージで案内：既存コードを改変せずに追加） ---
-async def _send_card_pay_offer(_chat_id: int, _choice: str, _count: int, _amount: int):
+SESSIONS = load_sessions()
+
+async def _send_card_pay_offer(chat_id: int, choice: str, count: int, amount: int):
+    """合計金額表示後にカード決済ボタンを提示"""
     try:
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="💳 カードで支払う（Stripe）", callback_data=f"ccpay_{_choice}_{_count}_{_amount}")
+            InlineKeyboardButton(text="💳 カードで支払う（Stripe）", callback_data=f"ccpay_{choice}_{count}_{amount}")
         ]])
-        await bot.send_message(_chat_id, "💳 クレジットカード決済をご希望の方はこちら👇", reply_markup=kb)  # type: ignore
-    except Exception as _e:
-        print("⚠️ _send_card_pay_offer error:", _e)
+        await bot.send_message(chat_id, "💳 クレジットカード決済をご希望の方はこちら👇", reply_markup=kb)
+    except Exception as e:
+        print(f"⚠️ _send_card_pay_offer error: {e}")
 
-_SENT_CARD_OFFER = set()
-
-from aiogram import F as _F, types as _types  # reuse aiogram symbols safely
-
-@dp.message(_F.text.regexp(r"合計金額"))  # 既存フローで金額案内直後にヒット
-async def __maybe_offer_card_pay(message: _types.Message):  # type: ignore
-    try:
-        uid = message.from_user.id
-        st = STATE.get(uid, {})  # type: ignore
-        if st.get("stage") == "waiting_payment" and uid not in _SENT_CARD_OFFER:
-            choice = st.get("type")
-            count = int(st.get("count", 1) or 1)
-            amount = int(st.get("final_price", 0) or 0)
-            if choice and amount:
-                await _send_card_pay_offer(uid, choice, count, amount)
-                _SENT_CARD_OFFER.add(uid)
-    except Exception as _e:
-        print("⚠️ __maybe_offer_card_pay error:", _e)
-
-# --- Stripe Checkout セッション作成 ---
-@dp.callback_query(_F.data.startswith("ccpay_"))
-async def __create_checkout(callback: _types.CallbackQuery):  # type: ignore
-    if not _STRIPE_SECRET_KEY:
+@dp.callback_query(F.data.startswith("ccpay_"))
+async def create_checkout(callback: types.CallbackQuery):
+    if not (stripe and STRIPE_SECRET_KEY):
         await callback.message.answer("⚠️ カード決済は現在利用できません（設定未完了）。")
         return await callback.answer()
+
     try:
         _, choice, count_str, amount_str = callback.data.split("_", 3)
         count = int(count_str); amount = int(amount_str)
         uid = callback.from_user.id
 
-        success_url = f"{_PUBLIC_BASE_URL}/stripe/success?session_id={{CHECKOUT_SESSION_ID}}"
-        cancel_url = f"{_PUBLIC_BASE_URL}/stripe/cancel"
+        success_url = f"{PUBLIC_BASE_URL}/stripe/success?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{PUBLIC_BASE_URL}/stripe/cancel"
 
-        session = stripe.checkout.Session.create(  # type: ignore
+        session = stripe.checkout.Session.create(
             mode="payment",
             success_url=success_url,
             cancel_url=cancel_url,
@@ -1191,7 +839,7 @@ async def __create_checkout(callback: _types.CallbackQuery):  # type: ignore
                 "price_data": {
                     "currency": "jpy",
                     "product_data": {"name": f"{choice} x{count}"},
-                    "unit_amount": amount * 100,
+                    "unit_amount": amount * 100
                 },
                 "quantity": 1
             }],
@@ -1199,36 +847,39 @@ async def __create_checkout(callback: _types.CallbackQuery):  # type: ignore
                 "tg_uid": str(uid),
                 "choice": choice,
                 "count": str(count),
-                "amount": str(amount),
-            },
+                "amount": str(amount)
+            }
         )
 
         SESSIONS[session.id] = {"uid": uid, "choice": choice, "count": count, "amount": amount}
-        _save_sessions()
+        save_sessions()
 
         await callback.message.answer("✅ カード決済ページを開いてお支払いください👇\n" + session.url)
         await callback.answer()
-    except Exception as _e:
-        await callback.message.answer(f"⚠️ セッション作成に失敗しました: {_e}")
-        try: await callback.answer("エラー")
-        except: pass
 
-# --- Stripe Webhook: 決済完了で自動承認＆eSIM送付 ---
-async def __stripe_webhook(request: "web.Request"):  # type: ignore
+    except Exception as e:
+        await callback.message.answer(f"⚠️ セッション作成に失敗しました: {e}")
+        try:
+            await callback.answer("エラー")
+        except:
+            pass
+
+# ------ Webhook / 成功/キャンセル エンドポイント ------
+async def stripe_webhook(request: "web.Request"):
     try:
         payload = await request.read()
         sig = request.headers.get("Stripe-Signature", "")
-        if _STRIPE_WEBHOOK_SECRET:
+        if STRIPE_WEBHOOK_SECRET and stripe:
             try:
-                event = stripe.Webhook.construct_event(  # type: ignore
-                    payload=payload, sig_header=sig, secret=_STRIPE_WEBHOOK_SECRET
-                )
+                event = stripe.Webhook.construct_event(payload=payload, sig_header=sig, secret=STRIPE_WEBHOOK_SECRET)
             except Exception as e:
-                print("⚠️ Webhook検証失敗:", e); return web.Response(status=400, text="Bad signature")
+                print(f"⚠️ Webhook検証失敗: {e}")
+                return web.Response(status=400, text="Bad signature")
         else:
-            event = _json.loads(payload.decode("utf-8"))
+            event = json.loads(payload.decode("utf-8"))
 
-        if event.get("type") == "checkout.session.completed":
+        etype = event.get("type")
+        if etype == "checkout.session.completed":
             session = event["data"]["object"]
             session_id = session["id"]
             meta = session.get("metadata", {})
@@ -1237,7 +888,7 @@ async def __stripe_webhook(request: "web.Request"):  # type: ignore
                 "uid": int(meta.get("tg_uid", 0)),
                 "choice": meta.get("choice"),
                 "count": int(meta.get("count", "1")),
-                "amount": int(meta.get("amount", "0")),
+                "amount": int(meta.get("amount", "0"))
             }
 
             uid = info.get("uid"); choice = info.get("choice")
@@ -1245,63 +896,84 @@ async def __stripe_webhook(request: "web.Request"):  # type: ignore
             amount = int(info.get("amount", 0) or 0)
 
             if not uid or not choice:
-                print("⚠️ セッション情報不備:", session_id)
+                print(f"⚠️ セッション情報不備: {session_id}")
                 return web.Response(text="ok")
 
-            # 在庫チェック & 送付（既存のSTOCK/LINKS/NOTICEを利用）
+            # 管理者へ決済通知（何枚・いくら・誰）
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    ("💳 Stripe 決済完了通知\n"
+                     f"🆔 Telegram ID: {uid}\n"
+                     f"📦 タイプ: {choice}\n"
+                     f"🧾 枚数: {count}\n"
+                     f"💴 支払金額: {amount}円\n"
+                     f"🪪 セッションID: {session_id}")
+                )
+            except Exception as e:
+                print("⚠️ 管理者通知失敗:", e)
+
+            # 在庫チェック & 自動送付
             try:
                 if len(STOCK.get(choice, [])) < count:
-                    await bot.send_message(uid, "⚠️ 決済完了しましたが在庫不足のため、後ほどお送りいたします。")  # type: ignore
+                    await bot.send_message(uid, "⚠️ 決済完了しましたが在庫不足のため、後ほどお送りいたします。")
                 else:
                     for i in range(count):
-                        file_id = STOCK[choice].pop(0)  # type: ignore
-                        await bot.send_photo(uid, file_id, caption=f"✅ {choice} #{i+1}/{count} を送信しました！（カード決済）")  # type: ignore
-                    save_data(); auto_backup()  # type: ignore
-                    await bot.send_message(uid, NOTICE)  # type: ignore
+                        file_id = STOCK[choice].pop(0)
+                        await bot.send_photo(uid, file_id, caption=f"✅ {choice} #{i+1}/{count} を送信しました！（カード決済）")
+                    save_data(); auto_backup()
+                    await bot.send_message(uid, NOTICE)
                     try:
-                        await log_purchase(uid, "Stripe-Checkout", choice, count, amount, code=None)  # type: ignore
+                        await log_purchase(uid, "Stripe-Checkout", choice, count, amount, code=None)
                     except Exception:
                         pass
             except Exception as e:
-                print("❌ 自動承認・送付エラー:", e)
+                print(f"❌ 自動承認・送付エラー: {e}")
 
             if session_id in SESSIONS:
-                SESSIONS.pop(session_id, None); _save_sessions()
+                SESSIONS.pop(session_id, None)
+                save_sessions()
 
         return web.Response(text="ok")
+
     except Exception as e:
-        print("❌ Webhook処理失敗:", e)
+        print(f"❌ Webhook処理失敗: {e}")
         return web.Response(status=400, text="bad request")
 
-async def __stripe_success(request: "web.Request"):  # type: ignore
+async def stripe_success(request: "web.Request"):
     return web.Response(text="✅ 決済が完了しました。TelegramにeSIMが届きます。")
 
-async def __stripe_cancel(request: "web.Request"):  # type: ignore
+async def stripe_cancel(request: "web.Request"):
     return web.Response(text="❌ 決済がキャンセルされました。再度お試しください。")
 
-async def __start_web_app():
-    try:
-        app = web.Application()
-        app.router.add_post("/stripe/webhook", __stripe_webhook)
-        app.router.add_get("/stripe/success", __stripe_success)
-        app.router.add_get("/stripe/cancel", __stripe_cancel)
-        port = int(_os.getenv("PORT", "8080"))
-        runner = web.AppRunner(app); await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port); await site.start()
-        print(f"🌐 Web server started at http://0.0.0.0:{port}")
-    except Exception as e:
-        print("⚠️ Webサーバ起動失敗:", e)
+async def start_web_app():
+    if not web:
+        print("⚠️ aiohttp が無いためWebhookサーバを起動できません。requirements.txt に 'aiohttp' を追加してください。")
+        return
+    app = web.Application()
+    app.router.add_post("/stripe/webhook", stripe_webhook)
+    app.router.add_get("/stripe/success", stripe_success)
+    app.router.add_get("/stripe/cancel", stripe_cancel)
 
-# --- 既存 main() をラップして並列起動（元の if __name__ を置き換える） ---
-_original_main = globals().get("main")
-async def __combined_main():
-    print("🚀 Stripe webhook server 起動 & Telegram ポーリング開始")
-    web_task = _asyncio.create_task(__start_web_app())
-    if callable(_original_main):
-        await _original_main()
-    await web_task
+    port = int(os.getenv("PORT", "8080"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Web server started at http://0.0.0.0:{port}")
 
-# ✅ 最後にこれ
-if __name__ == '__main__':
-    import asyncio as _a
-    _a.run(__combined_main())
+# ==============
+# アプリ起動部
+# ==============
+async def telegram_polling():
+    print("🤖 eSIM自販機Bot 起動中...")
+    await dp.start_polling(bot)
+
+async def main():
+    # Telegram と Webhook を並列起動
+    web_task = asyncio.create_task(start_web_app())
+    tg_task = asyncio.create_task(telegram_polling())
+    await asyncio.gather(web_task, tg_task)
+
+if __name__ == "__main__":
+    asyncio.run(main())
